@@ -940,7 +940,7 @@ static void wayland_surface_reconfigure_size(struct wayland_surface *surface,
 {
     TRACE("hwnd=%p size=%dx%d\n", surface->hwnd, width, height);
 
-    if (width != 0 && height != 0)
+    if (width > 0 && height > 0)
         wp_viewport_set_destination(surface->wp_viewport, width, height);
     else
         wp_viewport_set_destination(surface->wp_viewport, -1, -1);
@@ -971,7 +971,7 @@ static void wayland_surface_reconfigure_client(struct wayland_surface *surface,
         wl_subsurface_place_above(client->wl_subsurface, surface->wl_surface);
     }
 
-    if (rect.left != rect.right && rect.top != rect.bottom)
+    if (rect.right > rect.left && rect.bottom > rect.top)
         wp_viewport_set_destination(client->wp_viewport, rect.right - rect.left, rect.bottom - rect.top);
     else /* We can't have a 0x0 destination, use 1x1 instead. */
         wp_viewport_set_destination(client->wp_viewport, 1, 1);
