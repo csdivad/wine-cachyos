@@ -945,6 +945,20 @@ BOOL WINAPI CryptAcquireCertificatePrivateKey(PCCERT_CONTEXT pCert,
     TRACE("(%p, %08lx, %p, %p, %p, %p)\n", pCert, dwFlags, pvReserved,
      phCryptProv, pdwKeySpec, pfCallerFreeProv);
 
+    if (dwFlags & CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG)
+    {
+        /* Private keys here always live in a CAPI key container and Wine has
+         * no NCrypt provider able to wrap one. Handing back the CAPI handle
+         * would give the caller a value it treats as an NCRYPT_KEY_HANDLE, so
+         * report the key as unavailable and let it fall back to CAPI.
+         */
+        FIXME("(%p, %08lx): NCRYPT-only private keys not supported\n", pCert, dwFlags);
+        *phCryptProv = 0;
+        if (pfCallerFreeProv) *pfCallerFreeProv = FALSE;
+        SetLastError(CRYPT_E_NO_KEY_PROPERTY);
+        return FALSE;
+    }
+
     if (dwFlags & CRYPT_ACQUIRE_USE_PROV_INFO_FLAG)
     {
         DWORD size = 0;
