@@ -2569,7 +2569,7 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
 
             clear_native_views();
             if (!is_win64) increase_try_map_step = FALSE;
-            ptr = alloc_free_area( (void *)limit_low, (void *)limit_high, size, top_down, unix_prot, align_mask );
+            ptr = alloc_free_area( start, end, host_size, top_down, unix_prot, align_mask );
             if (!is_win64) increase_try_map_step = TRUE;
             if (!ptr) return STATUS_NO_MEMORY;
         }
@@ -3653,7 +3653,6 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
     }
 
     if (!image_info->map_addr &&
-        (image_info->image_charact & IMAGE_FILE_DLL) &&
         (image_info->image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated))
     {
         SERVER_START_REQ( get_image_map_address )
@@ -5414,7 +5413,13 @@ void virtual_set_large_address_space(void)
                 free_reserved_memory( 0, (char *)0x7ffe0000 );
 #endif
         }
-        else user_space_wow_limit = (is_large_address_aware() ? limit_4g : limit_2g) - 1;
+        else if (is_large_address_aware())
+        {
+            user_space_wow_limit = limit_4g - 1;
+            /* reserve space for top-down allocations; some apps break if the entire high 2G is available */
+            reserve_area( (void *)0xfff00000, (void *)0xffff0000 );
+        }
+        else user_space_wow_limit = limit_2g - 1;
     }
     else
     {
