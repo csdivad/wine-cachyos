@@ -3574,7 +3574,7 @@ static USERINFOSTATE MSI_GetUserInfo(LPCWSTR szProduct,
     {
         if (lpUserNameBuf && !user)
         {
-            (*pcchUserNameBuf)--;
+            if (*pcchUserNameBuf) (*pcchUserNameBuf)--;
             goto done;
         }
 
@@ -3603,7 +3603,7 @@ static USERINFOSTATE MSI_GetUserInfo(LPCWSTR szProduct,
     {
         if (!serial)
         {
-            (*pcchSerialBuf)--;
+            if (*pcchSerialBuf) (*pcchSerialBuf)--;
             goto done;
         }
 
