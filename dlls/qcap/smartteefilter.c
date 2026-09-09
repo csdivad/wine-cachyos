@@ -240,9 +240,11 @@ static HRESULT convert_sample_rgb24_to_rgb32(IMediaSample *sample, const AM_MEDI
         return VFW_E_INVALIDMEDIATYPE;
 
     width = src_vih->bmiHeader.biWidth;
+    height = src_vih->bmiHeader.biHeight;
+    if (width == LONG_MIN || height == LONG_MIN)
+        return VFW_E_INVALIDMEDIATYPE;
     if (width < 0)
         width = -width;
-    height = src_vih->bmiHeader.biHeight;
     if (height < 0)
         height = -height;
 
@@ -380,23 +382,32 @@ static HRESULT source_get_media_type(struct strmbase_pin *iface,
             {
                 VIDEOINFOHEADER *vih = (VIDEOINFOHEADER *)mt->pbFormat;
                 LONG width = vih->bmiHeader.biWidth;
-                LONG height = vih->bmiHeader.biHeight < 0 ? -vih->bmiHeader.biHeight : vih->bmiHeader.biHeight;
+                LONG height = vih->bmiHeader.biHeight;
                 LONG row_size;
 
-                if (width < 0)
-                    width = -width;
-
-                if (!width || !height || width > LONG_MAX / 4 || height > LONG_MAX / (width * 4))
+                if (width == LONG_MIN || height == LONG_MIN)
+                {
                     hr = VFW_E_INVALIDMEDIATYPE;
+                }
                 else
                 {
-                    row_size = ((width * 32 + 31) / 32) * 4;
+                    if (width < 0)
+                        width = -width;
+                    if (height < 0)
+                        height = -height;
 
-                    mt->subtype = MEDIASUBTYPE_RGB32;
-                    mt->lSampleSize = row_size * height;
-                    vih->bmiHeader.biBitCount = 32;
-                    vih->bmiHeader.biCompression = BI_RGB;
-                    vih->bmiHeader.biSizeImage = mt->lSampleSize;
+                    if (!width || !height || width > LONG_MAX / 32 || height > LONG_MAX / (((width * 32 + 31) / 32) * 4))
+                        hr = VFW_E_INVALIDMEDIATYPE;
+                    else
+                    {
+                        row_size = ((width * 32 + 31) / 32) * 4;
+
+                        mt->subtype = MEDIASUBTYPE_RGB32;
+                        mt->lSampleSize = row_size * height;
+                        vih->bmiHeader.biBitCount = 32;
+                        vih->bmiHeader.biCompression = BI_RGB;
+                        vih->bmiHeader.biSizeImage = mt->lSampleSize;
+                    }
                 }
             }
         }
