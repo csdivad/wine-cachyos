@@ -64,16 +64,6 @@ static BOOL device_fake_exclusive(void)
     return TRUE;
 }
 
-static HANDLE main_loop_thread;
-
-void main_loop_stop(void)
-{
-    if (main_loop_thread) {
-        WaitForSingleObject(main_loop_thread, INFINITE);
-        CloseHandle(main_loop_thread);
-    }
-}
-
 void set_stream_volumes(struct audio_client *This)
 {
     struct set_volumes_params params;
