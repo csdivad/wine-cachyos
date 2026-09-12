@@ -55,6 +55,9 @@ extern BOOL delay_heap_free;
 extern BOOL heap_zero_hack;
 extern BOOL heap_top_down_hack;
 
+/* version */
+extern const char * CDECL wine_get_version(void);
+
 /* exceptions */
 extern NTSTATUS call_seh_handlers( EXCEPTION_RECORD *rec, CONTEXT *context );
 extern NTSTATUS WINAPI dispatch_exception( EXCEPTION_RECORD *rec, CONTEXT *context );
@@ -88,6 +91,7 @@ extern void set_native_thread_name( DWORD tid, const char *name );
 
 /* init routines */
 extern void loader_init( CONTEXT *context, void **entry );
+extern void terminate_process_on_shutdown(void);
 extern void version_init(void);
 extern void debug_init(void);
 extern void actctx_init(void);
