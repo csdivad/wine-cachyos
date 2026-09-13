@@ -938,6 +938,10 @@ BOOL WAYLAND_GetWindowStateUpdates(HWND hwnd, UINT *state_cmd, UINT *swp_flags,
     DWORD style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
     HWND focused_hwnd, old_foreground = NtUserGetForegroundWindow();
 
+    /* win32u calls this with NULL outputs to unlock the host state after applying new
+     * state. There is no state to unlock here, but the outputs must not be dereferenced. */
+    if (!state_cmd) return FALSE;
+
     /* in these cases we dont need to update the window focus, borrowed from winemac */
     if (!(style & WS_VISIBLE)) return FALSE;
     if ((style & (WS_POPUP | WS_CHILD)) == WS_CHILD) return FALSE;
