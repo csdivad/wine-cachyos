@@ -385,6 +385,8 @@ struct vulkan_funcs
     PFN_vkSignalSemaphoreKHR p_vkSignalSemaphoreKHR;
     PFN_vkWaitSemaphores p_vkWaitSemaphores;
     PFN_vkWaitSemaphoresKHR p_vkWaitSemaphoresKHR;
+    PFN_vkWaitForPresentKHR p_vkWaitForPresentKHR;
+    PFN_vkWaitForPresent2KHR p_vkWaitForPresent2KHR;
 };
 
 /* interface between win32u and the user drivers */
