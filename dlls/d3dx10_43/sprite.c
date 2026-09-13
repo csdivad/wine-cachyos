@@ -319,7 +319,8 @@ static HRESULT WINAPI d3dx10_sprite_DrawSpritesBuffered(ID3DX10Sprite *iface,
     for (unsigned int i = 0; i < count; ++i)
     {
         sprite->buffer.sprites[sprite->buffer.count++] = sprites[i];
-        if (sprite->flags & D3DX10_SPRITE_ADDREF_TEXTURES)
+        /* the release side skips NULL textures, so must the AddRef side */
+        if ((sprite->flags & D3DX10_SPRITE_ADDREF_TEXTURES) && sprites[i].pTexture)
             ID3D10ShaderResourceView_AddRef(sprites[i].pTexture);
     }
 
