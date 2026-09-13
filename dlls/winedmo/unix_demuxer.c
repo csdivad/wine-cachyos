@@ -207,12 +207,13 @@ static void parse_mp4_streams_metadata( struct demuxer *demuxer )
 NTSTATUS demuxer_create( void *arg )
 {
     struct demuxer_create_params *params = arg;
-    const char *ext = params->url ? strrchr( params->url, '.' ) : "";
+    const char *ext = params->url ? strrchr( params->url, '.' ) : NULL;
     const AVInputFormat *format;
     struct demuxer *demuxer;
     int i, ret;
 
     TRACE( "context %p, url %s, mime %s\n", params->context, debugstr_a(params->url), debugstr_a(params->mime_type) );
+    if (!ext) ext = "";
 
     if (!(demuxer = calloc( 1, sizeof(*demuxer) ))) return STATUS_NO_MEMORY;
     if (!(demuxer->ctx = avformat_alloc_context())) goto failed;
