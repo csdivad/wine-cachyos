@@ -867,6 +867,13 @@ void wayland_surface_update_toplevel_parent(struct wayland_surface *surface)
         wayland_win_data_release(owner_data);
     }
 
+    /* The compositor rejects a parent that is one of our descendants (invalid_parent). */
+    if (owner_surface && has_owner_cycle(surface->hwnd, owner_surface->hwnd))
+    {
+        ERR("hwnd=%p parent=%p forms a cycle!\n", surface->hwnd, owner_surface->hwnd);
+        owner_surface = NULL;
+    }
+
     xdg_toplevel_set_parent(surface->xdg_toplevel, owner_surface ? owner_surface->xdg_toplevel : NULL);
 }
 

@@ -478,6 +478,30 @@ BOOL WAYLAND_WindowPosChanging(HWND hwnd, UINT swp_flags, BOOL shaped, const str
 }
 
 /***********************************************************************
+ *           has_owner_cycle
+ *
+ * Check whether the wayland parent chain of the given owner window leads back to
+ * hwnd, which would make the compositor raise an invalid_parent/bad_parent error
+ * and kill the connection. Owner hints can form such cycles, e.g. when a window
+ * that is the child of another one is hinted as the owner of its own parent.
+ */
+BOOL has_owner_cycle(HWND hwnd, HWND owner)
+{
+    struct wayland_win_data *data;
+    /* Do not spin forever if the owner chain contains a cycle that does not include hwnd. */
+    unsigned int depth = 0;
+
+    while (owner && owner != hwnd && depth++ < 32)
+    {
+        if (!(data = wayland_win_data_get(owner))) return FALSE;
+        owner = data->wayland_surface ? data->wayland_surface->owner_hwnd : NULL;
+        wayland_win_data_release(data);
+    }
+
+    return owner == hwnd;
+}
+
+/***********************************************************************
  *           WAYLAND_WindowPosChanged
  */
 void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,
@@ -492,6 +516,12 @@ void WAYLAND_WindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UIN
      * may need to query win_data information about other HWNDs and thus
      * acquire the lock itself internally. */
     if (!(managed = is_window_managed(hwnd, swp_flags, fullscreen)) && surface) owner = owner_hint;
+
+    if (owner && owner != hwnd && has_owner_cycle(hwnd, owner))
+    {
+        ERR("hwnd=%p owner=%p forms a cycle!\n", hwnd, owner);
+        owner = 0;
+    }
 
     TRACE("hwnd %p owner %p new_rects %s after %p flags %08x\n", hwnd,
           owner, debugstr_window_rects(new_rects), insert_after, swp_flags);
