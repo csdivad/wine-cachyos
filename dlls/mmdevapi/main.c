@@ -593,6 +593,8 @@ static HRESULT get_mmdevice_by_activatepath(const WCHAR *path, IMMDevice **mmdev
         hr = IMMDeviceEnumerator_GetDefaultAudioEndpoint(devenum, eCapture, eMultimedia, mmdev);
     } else if (wcslen(path) == MMDEV_PATH_LEN - 1) {
         WCHAR path_prefix[MMDEV_PREFIX_LEN];
+        /* Assume the path is invalid, unless the checks below recognize it. */
+        hr = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
         memcpy(path_prefix, path, (MMDEV_PREFIX_LEN - 1) * sizeof(WCHAR));
         path_prefix[MMDEV_PREFIX_LEN - 1] = 0;
 
