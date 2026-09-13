@@ -528,6 +528,7 @@ struct wayland_win_data
 
 struct wayland_win_data *wayland_win_data_get(HWND hwnd);
 void wayland_win_data_release(struct wayland_win_data *data);
+BOOL has_owner_cycle(HWND hwnd, HWND owner);
 
 struct wayland_client_surface *get_client_surface(HWND hwnd);
 void set_client_surface(HWND hwnd, struct wayland_client_surface *client);
