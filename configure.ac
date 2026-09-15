@@ -55,6 +55,7 @@ AC_ARG_WITH(pcap,      AS_HELP_STRING([--without-pcap],[do not use the Packet Ca
             [if test "x$withval" = "xno"; then ac_cv_header_pcap_pcap_h=no; fi])
 AC_ARG_WITH(pcsclite,  AS_HELP_STRING([--without-pcsclite],[do not use PCSC lite]))
 AC_ARG_WITH(piper,     AS_HELP_STRING([--without-piper],[do not use the Piper TTS library]))
+AC_ARG_WITH(pipewire,  AS_HELP_STRING([--without-pipewire],[do not use PipeWire sound support]))
 AC_ARG_WITH(pthread,   AS_HELP_STRING([--without-pthread],[do not use the pthread library]))
 AC_ARG_WITH(pulse,     AS_HELP_STRING([--without-pulse],[do not use PulseAudio sound support]))
 AC_ARG_WITH(sane,      AS_HELP_STRING([--without-sane],[do not use SANE (scanner support)]))
@@ -583,6 +584,7 @@ This is an error since --enable-archs=$wine_arch was requested.])])
 
     case $wine_arch in
       i386) WINE_TRY_PE_CFLAGS([-fno-omit-frame-pointer])
+            WINE_TRY_PE_CFLAGS([-mstack-alignment=4])
             WINE_TRY_PE_CFLAGS([-mpreferred-stack-boundary=2])
             WINE_TRY_PE_CFLAGS([-Wl,--disable-stdcall-fixup],
                                [AS_VAR_APPEND([${wine_arch}_LDFLAGS],[" -Wl,--disable-stdcall-fixup"])]) ;;
@@ -1428,7 +1430,8 @@ then
                             [`test -n "$PKG_CONFIG" && $PKG_CONFIG --variable=wayland_scanner wayland-scanner 2>/dev/null`])],
               [WAYLAND_CLIENT_LIBS=""],[$WAYLAND_CLIENT_LIBS])])])
     WINE_PACKAGE_FLAGS(XKBCOMMON,[xkbcommon],,,,
-        [AC_CHECK_LIB(xkbcommon,xkb_context_new,[:],[XKBCOMMON_LIBS=""],[$XKBCOMMON_LIBS])])
+        [AC_CHECK_HEADERS([xkbcommon/xkbcommon.h, xkbcommon/xkbcommon-compose.h])
+         AC_CHECK_LIB(xkbcommon,xkb_context_new,[:],[XKBCOMMON_LIBS=""],[$XKBCOMMON_LIBS])])
     WINE_PACKAGE_FLAGS(XKBREGISTRY,[xkbregistry],,,,
         [AC_CHECK_LIB(xkbregistry,rxkb_context_new,[:],[XKBREGISTRY_LIBS=""],[$XKBREGISTRY_LIBS])])
     if test "x$with_opengl" != "xno"
@@ -1460,6 +1463,12 @@ else
     WINE_NOTICE_WITH(x,[test "x$X_LIBS" = "x"],
                      [X ${notice_platform}development files not found, the X11 driver won't be supported.],
                      [enable_winex11_drv])
+fi
+
+dnl **** Check for OpenCL ****
+if test "$ac_cv_header_CL_cl_h" = "yes"
+then
+    AC_CHECK_LIB(OpenCL,clGetPlatformInfo,[AC_SUBST(OPENCL_LIBS,["-lOpenCL"])])
 fi
 
 dnl **** Check for libpcap ****
@@ -1704,6 +1713,19 @@ WINE_NOTICE_WITH(pulse, [test -z "$PULSE_LIBS"],
         [libpulse ${notice_platform}development files not found or too old, Pulse won't be supported.],
         [enable_winepulse_drv])
 
+dnl **** Check for PipeWire ****
+if test "x$with_pipewire" != "xno";
+then
+    WINE_PACKAGE_FLAGS(PIPEWIRE,[libpipewire-0.3],,,,
+        [AC_CHECK_HEADERS([pipewire/pipewire.h],,[PIPEWIRE_LIBS=""])
+         AS_IF([test -n "$PIPEWIRE_LIBS"],
+            [AC_CHECK_DECL([pw_stream_get_time_n],,[PIPEWIRE_LIBS=""],
+                [[#include <pipewire/pipewire.h>]])])])
+fi
+WINE_NOTICE_WITH(pipewire, [test -z "$PIPEWIRE_LIBS"],
+        [libpipewire-0.3 ${notice_platform}development files not found, PipeWire won't be supported.],
+        [enable_winepipewire_drv])
+
 dnl **** Check for FFmpeg ****
 if test "x$with_ffmpeg" != "xno";
 then
@@ -1940,8 +1962,8 @@ WINE_NOTICE_WITH(netapi,[test "x$ac_cv_lib_soname_netapi" = "x"],
 
 
 dnl **** Check for any sound system ****
-if test "x$enable_winealsa_drv$enable_winecoreaudio_drv$enable_winepulse_drv$enable_wineoss_drv$enable_wineandroid_drv" = xnonononono -a \
-        "x$with_alsa$with_coreaudio$with_oss$with_pulse" != xnononono
+if test "x$enable_winealsa_drv$enable_winecoreaudio_drv$enable_winepulse_drv$enable_wineoss_drv$enable_wineandroid_drv$enable_winepipewire_drv" = xnononononono -a \
+        "x$with_alsa$with_coreaudio$with_oss$with_pulse$with_pipewire" != xnonononono
 then
     WINE_WARNING([No sound system was found. Windows applications will be silent.])
 fi
@@ -2166,7 +2188,6 @@ AC_CHECK_FUNCS(\
         dladdr1 \
 	dlinfo \
 	epoll_create \
-	epoll_pwait2 \
 	fstatfs \
 	futimens \
 	futimes \
@@ -2538,6 +2559,7 @@ WINE_CONFIG_MAKEFILE(dlls/apphelp/tests)
 WINE_CONFIG_MAKEFILE(dlls/appwiz.cpl)
 WINE_CONFIG_MAKEFILE(dlls/appxdeploymentclient)
 WINE_CONFIG_MAKEFILE(dlls/atiadlxx)
+WINE_CONFIG_MAKEFILE(dlls/atidxx64)
 WINE_CONFIG_MAKEFILE(dlls/atl)
 WINE_CONFIG_MAKEFILE(dlls/atl/tests)
 WINE_CONFIG_MAKEFILE(dlls/atl100)
@@ -2856,6 +2878,8 @@ WINE_CONFIG_MAKEFILE(dlls/icmp)
 WINE_CONFIG_MAKEFILE(dlls/icmui)
 WINE_CONFIG_MAKEFILE(dlls/icmui/tests)
 WINE_CONFIG_MAKEFILE(dlls/icu)
+WINE_CONFIG_MAKEFILE(dlls/icuin)
+WINE_CONFIG_MAKEFILE(dlls/icuuc)
 WINE_CONFIG_MAKEFILE(dlls/ieframe)
 WINE_CONFIG_MAKEFILE(dlls/ieframe/tests)
 WINE_CONFIG_MAKEFILE(dlls/ieproxy)
@@ -3443,6 +3467,7 @@ WINE_CONFIG_MAKEFILE(dlls/winehid.sys)
 WINE_CONFIG_MAKEFILE(dlls/winemac.drv)
 WINE_CONFIG_MAKEFILE(dlls/winemapi)
 WINE_CONFIG_MAKEFILE(dlls/wineoss.drv)
+WINE_CONFIG_MAKEFILE(dlls/winepipewire.drv)
 WINE_CONFIG_MAKEFILE(dlls/wineps.drv)
 WINE_CONFIG_MAKEFILE(dlls/wineps16.drv16)
 WINE_CONFIG_MAKEFILE(dlls/winepulse.drv)
@@ -3848,7 +3873,7 @@ dnl Rules for generated source files
 
 WINE_APPEND_RULE(
 [dlls/ntdll/unix/version.c: dummy
-	@version=\`(GIT_DIR=${wine_srcdir}.git git describe HEAD 2>/dev/null || echo \"wine-\$(PACKAGE_VERSION)\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
+	@version=\`(GIT_DIR=${wine_srcdir}.git git describe HEAD 2>/dev/null || echo \"wine-\$(PACKAGE_VERSION)\") | sed -n -e '\$\$s/\(.*\)/const char wine_build[[]] = \"\\1 (CachyOS)\";/p'\` && (echo \$\$version | cmp -s - \$[@]) || echo \$\$version >\$[@] || (rm -f \$[@] && exit 1)
 programs/winetest/build.rc: dummy
 	@build=\"STRINGTABLE { 1 \\\"\`GIT_DIR=${wine_srcdir}.git git rev-parse HEAD 2>/dev/null\`\\\" }\" && (echo \$\$build | cmp -s - \$[@]) || echo \$\$build >\$[@] || (rm -f \$[@] && exit 1)
 dlls/wineandroid.drv/wine-debug.apk: dlls/wineandroid.drv/build.gradle ${wine_srcdir}dlls/wineandroid.drv/AndroidManifest.xml ${wine_srcdir}dlls/wineandroid.drv/WineActivity.java ${wine_srcdir}dlls/wineandroid.drv/wine.svg

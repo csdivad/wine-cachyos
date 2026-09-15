@@ -58,6 +58,23 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(hid);
 
+/* logic from SDL2's SDL_ShouldIgnoreGameController; also used by the udev
+ * backend, so it must exist even when SDL itself is not available */
+BOOL is_sdl_ignored_device(WORD vid, WORD pid)
+{
+    const char *whitelist = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT");
+    const char *blacklist = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES");
+    char needle[16];
+
+    if (vid == 0x056a) return TRUE; /* all Wacom devices */
+    if (vid == 0x28de && pid == 0x11ff) return TRUE; /* Steam Input virtual controller, handled with evdev */
+
+    sprintf(needle, "0x%04x/0x%04x", vid, pid);
+    if (whitelist) return strcasestr(whitelist, needle) == NULL;
+    if (blacklist) return strcasestr(blacklist, needle) != NULL;
+    return FALSE;
+}
+
 #ifdef SONAME_LIBSDL2
 
 static pthread_mutex_t sdl_cs = PTHREAD_MUTEX_INITIALIZER;
@@ -928,20 +945,11 @@ static BOOL set_report_from_controller_event(struct sdl_device *impl, SDL_Event 
     return FALSE;
 }
 
-/* logic from SDL2's SDL_ShouldIgnoreGameController */
-BOOL is_sdl_ignored_device(WORD vid, WORD pid)
+
+static BOOL is_emulating_steaminput(void)
 {
-    const char *whitelist = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT");
-    const char *blacklist = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES");
-    char needle[16];
-
-    if (vid == 0x056a) return TRUE; /* all Wacom devices */
-    if (vid == 0x28de && pid == 0x11ff) return TRUE; /* Steam Input virtual controller, handled with evdev */
-
-    sprintf(needle, "0x%04x/0x%04x", vid, pid);
-    if (whitelist) return strcasestr(whitelist, needle) == NULL;
-    if (blacklist) return strcasestr(blacklist, needle) != NULL;
-    return FALSE;
+    const char *env = getenv("PROTON_EMULATE_STEAMINPUT");
+    return env && atoi(env);
 }
 
 static void sdl_add_device(unsigned int index)
@@ -998,6 +1006,14 @@ static void sdl_add_device(unsigned int index)
         if (controller) pSDL_GameControllerClose(controller);
         pSDL_JoystickClose(joystick);
         return;
+    }
+
+    if (is_emulating_steaminput())
+    {
+        TRACE("emulating steam input with %s\n", debugstr_device_desc(&desc));
+        desc.vid = 0x28de;
+        desc.pid = 0x11ff;
+        desc.version = 0;
     }
 
     if (pSDL_JoystickGetSerial && (sdl_serial = pSDL_JoystickGetSerial(joystick)))

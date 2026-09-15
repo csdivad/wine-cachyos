@@ -1735,7 +1735,7 @@ done:
     if (NT_SUCCESS(status) && ext)
     {
         strcpy( ext, ".so" );
-        load_builtin_unixlib( *module, ptr );
+        set_builtin_unixlib_name( *module, ptr );
     }
     free( file );
     return status;
@@ -1789,6 +1789,78 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
             return STATUS_IMAGE_ALREADY_LOADED;
         return status;
     }
+}
+
+
+/***********************************************************************
+ *           load_unixlib_by_name
+ */
+NTSTATUS load_unixlib_by_name( const UNICODE_STRING *nt_name, void **handle_ret )
+{
+    unsigned int i, pos, namepos, maxlen = 0;
+    unsigned int len = nt_name->Length / sizeof(WCHAR);
+    const char *so_dir = get_so_dir( current_machine );
+    char *ptr = NULL, *file, *ext = NULL;
+    void *handle = NULL;
+
+    if (!len) return STATUS_DLL_NOT_FOUND;
+
+    for (i = namepos = 0; i < len; i++)
+        if (nt_name->Buffer[i] == '/' || nt_name->Buffer[i] == '\\') break;
+
+    if (i < len)  /* explicit path */
+    {
+        UNICODE_STRING true_nt_name;
+        OBJECT_ATTRIBUTES attr;
+
+        InitializeObjectAttributes( &attr, (UNICODE_STRING *)nt_name, 0, 0, NULL );
+        if (!get_nt_and_unix_names( &attr, &true_nt_name, &file, FILE_OPEN, FALSE ))
+            handle = dlopen( file, RTLD_NOW );
+        free( true_nt_name.Buffer );
+        goto done;
+    }
+
+    if (build_dir) maxlen = strlen(build_dir) + sizeof("/dlls/") + len;
+    maxlen = max( maxlen, dll_path_maxlen + 1 ) + len + sizeof("/aarch64-unix") + sizeof(".so");
+
+    if (!(file = malloc( maxlen ))) return STATUS_NO_MEMORY;
+
+    pos = maxlen - len - 4;
+    /* we don't want to depend on the current codepage here */
+    for (i = 0; i < len; i++)
+    {
+        if (nt_name->Buffer[namepos + i] > 127) goto done;
+        file[pos + i] = (char)nt_name->Buffer[namepos + i];
+        if (file[pos + i] >= 'A' && file[pos + i] <= 'Z') file[pos + i] += 'a' - 'A';
+        else if (file[pos + i] == '.') ext = file + pos + i;
+    }
+    file[pos + len] = 0;
+    file[--pos] = '/';
+    if (!ext) ext = file + pos + len;
+
+    if (build_dir)
+    {
+        ptr = prepend_build_dir_path( file + pos, ".so", "", "/dlls", build_dir );
+        strcpy( ext, ".so" );
+        if ((handle = dlopen( ptr, RTLD_NOW ))) goto done;
+    }
+
+    strcpy( ext, ".so" );
+    for (i = 0; dll_paths[i]; i++)
+    {
+        ptr = prepend( file + pos, so_dir, strlen(so_dir) );
+        ptr = prepend( ptr, dll_paths[i], strlen(dll_paths[i]) );
+        if ((handle = dlopen( ptr, RTLD_NOW ))) goto done;
+
+        ptr = prepend( file + pos, dll_paths[i], strlen(dll_paths[i]) );
+        if ((handle = dlopen( ptr, RTLD_NOW ))) goto done;
+    }
+
+ done:
+    free( file );
+    if (!handle) return STATUS_DLL_NOT_FOUND;
+    *handle_ret = handle;
+    return STATUS_SUCCESS;
 }
 
 
@@ -2278,6 +2350,7 @@ static ULONG_PTR get_image_address(void)
     return 0;
 }
 
+BOOL disable_sfn;
 BOOL process_termination_delay;
 BOOL ac_odyssey;
 BOOL fsync_help_simulated_pulse;
@@ -2291,6 +2364,107 @@ BOOL alert_simulate_sched_quantum;
 BOOL fsync_simulate_sched_quantum;
 BOOL fsync_yield_to_waiters;
 
+static void patch_redundant_packed_split_lock(void)
+{
+#if defined(__linux__) && (defined(__i386__) || defined(__x86_64__))
+    static const BYTE signature[] =
+    {
+        0x0f, 0xb7, 0xd0, 0x8d, 0x92, 0xb7, 0x39, 0x34, 0x57, 0x03, 0xf1,
+        0x87, 0x94, 0xc4, 0x07, 0xf0, 0xff, 0xff,
+        0x5a, 0xc1, 0xc0, 0x68, 0x5a, 0x58, 0x5a,
+    };
+    const IMAGE_DOS_HEADER *dos;
+    const IMAGE_NT_HEADERS32 *nt;
+    const IMAGE_SECTION_HEADER *section;
+    BYTE *base = (BYTE *)peb->ImageBaseAddress, *match = NULL, *target;
+    SIZE_T image_size, section_table_offset;
+    void *protect_base;
+    SIZE_T protect_size;
+    ULONG old_prot, restore_prot;
+    NTSTATUS status;
+    unsigned int i;
+
+    if (main_image_info.Machine != IMAGE_FILE_MACHINE_I386 || !base ||
+        main_image_info.ImageFileSize < sizeof(*dos))
+        return;
+
+    dos = (const IMAGE_DOS_HEADER *)base;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < sizeof(*dos) ||
+        (SIZE_T)dos->e_lfanew > main_image_info.ImageFileSize ||
+        main_image_info.ImageFileSize - dos->e_lfanew < sizeof(*nt))
+        return;
+
+    nt = (const IMAGE_NT_HEADERS32 *)(base + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE ||
+        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR32_MAGIC ||
+        nt->FileHeader.SizeOfOptionalHeader < sizeof(nt->OptionalHeader))
+        return;
+
+    image_size = nt->OptionalHeader.SizeOfImage;
+    section = (const IMAGE_SECTION_HEADER *)((const BYTE *)&nt->OptionalHeader +
+                                             nt->FileHeader.SizeOfOptionalHeader);
+    section_table_offset = (const BYTE *)section - base;
+    if (section_table_offset > image_size ||
+        nt->FileHeader.NumberOfSections >
+        (image_size - section_table_offset) / sizeof(*section))
+        return;
+
+    for (i = 0; i < nt->FileHeader.NumberOfSections; ++i, ++section)
+    {
+        BYTE *cursor, *end;
+        SIZE_T section_size;
+
+        if (!(section->Characteristics & IMAGE_SCN_MEM_EXECUTE) ||
+            section->VirtualAddress >= image_size)
+            continue;
+
+        section_size = max( section->Misc.VirtualSize, section->SizeOfRawData );
+        section_size = min( section_size, image_size - section->VirtualAddress );
+        if (section_size < sizeof(signature)) continue;
+
+        cursor = base + section->VirtualAddress;
+        end = cursor + section_size;
+        while ((SIZE_T)(end - cursor) >= sizeof(signature))
+        {
+            BYTE *candidate = memchr( cursor, signature[0], end - cursor - sizeof(signature) + 1 );
+
+            if (!candidate) break;
+            if (!memcmp( candidate, signature, sizeof(signature) ))
+            {
+                if (match)
+                {
+                    WARN("HACK: multiple redundant split-lock signatures found; leaving image unchanged.\n");
+                    return;
+                }
+                match = candidate;
+            }
+            cursor = candidate + 1;
+        }
+    }
+
+    if (!match) return;
+    target = match + 11;
+    protect_base = target;
+    protect_size = 1;
+    status = NtProtectVirtualMemory( NtCurrentProcess(), &protect_base, &protect_size,
+                                     PAGE_EXECUTE_READWRITE, &old_prot );
+    if (status)
+    {
+        WARN("HACK: failed to make redundant split-lock instruction writable, status %#x.\n",
+             (int)status);
+        return;
+    }
+
+    *target = 0x89; /* xchg edx,[mem] -> mov [mem],edx; the following pop discards loaded edx. */
+    NtFlushInstructionCache( NtCurrentProcess(), target, 1 );
+    status = NtProtectVirtualMemory( NtCurrentProcess(), &protect_base, &protect_size,
+                                     old_prot, &restore_prot );
+    if (status)
+        WARN("HACK: failed to restore split-lock instruction protection, status %#x.\n", (int)status);
+    ERR("HACK: removed redundant packed-code split lock at %p.\n", target);
+#endif
+}
+
 static void hacks_init(void)
 {
     const char *sgi = getenv( "SteamGameId" );
@@ -2300,6 +2474,12 @@ static void hacks_init(void)
         ram_reporting_bias = atoll(env_str) * 1024 * 1024;
         ERR( "HACK: ram_reporting_bias %lldMB.\n", ram_reporting_bias / (1024 * 1024) );
     }
+
+    env_str = getenv("WINE_DISABLE_SFN");
+    if (env_str)
+        disable_sfn = !!atoi(env_str);
+    else if (main_argc > 1 && (strstr(main_argv[1], "Yakuza5.exe") ))
+        disable_sfn = TRUE;
 
     if (inproc_device_fd >= 0)
     {
@@ -2464,6 +2644,7 @@ static void start_main_thread(void)
 
     mallopt( M_PERTURB, 0xff );
     init_startup_info();
+    patch_redundant_packed_split_lock();
     *(ULONG_PTR *)&peb->CloudFileFlags = get_image_address();
     set_load_order_app_name( main_wargv[0] );
     init_thread_stack( teb, 0, 0, 0 );

@@ -172,8 +172,11 @@ static HRESULT WINAPI impl_type##_put_Completed(iface_type *iface, outer_handler
 {                                                                                                                 \
     struct impl_type *impl = impl_from_##iface_type(iface);                                                       \
     TRACE("iface %p, handler %p.\n", iface, handler);                                                             \
+    if (impl->outer_handler)                                                                                      \
+        outer_handler_iface_type##_Release(impl->outer_handler);                                                  \
     impl->outer_handler = handler;                                                                                \
-    outer_handler_iface_type##_AddRef(impl->outer_handler);                                                       \
+    if (handler)                                                                                                  \
+        outer_handler_iface_type##_AddRef(handler);                                                               \
     return impl_type##_handle_completion(impl);                                                                   \
 }                                                                                                                 \
 static HRESULT WINAPI impl_type##_get_Completed(iface_type *iface, outer_handler_iface_type **handler)            \
@@ -310,6 +313,8 @@ static HRESULT data_writer_init_buffer(struct data_writer *impl, UINT32 extra_ca
 
     impl->buffer = buffer;
     impl->data = data;
+    /* the copied bytes are part of the new buffer */
+    IBuffer_put_Length(buffer, pos);
 
     return S_OK;
 }
