@@ -111,7 +111,7 @@
 @ stub ADL2_Adapter_PreFlipPostProcessing_Select_LUT_Algorithm
 @ stub ADL2_Adapter_PreFlipPostProcessing_Select_LUT_Buffer
 @ stub ADL2_Adapter_PreFlipPostProcessing_Unselect_LUT_Buffer
-@ stub ADL2_Adapter_Primary_Get
+@ cdecl ADL2_Adapter_Primary_Get(ptr ptr)
 @ stub ADL2_Adapter_Primary_Set
 @ stub ADL2_Adapter_RAS_ErrorInjection_Set
 @ stub ADL2_Adapter_RegValueInt_Get
@@ -281,7 +281,7 @@
 @ stub ADL2_Display_FormatsOverride_Set
 @ stub ADL2_Display_FreeSyncState_Get
 @ stub ADL2_Display_FreeSyncState_Set
-@ stub ADL2_Display_FreeSync_Cap
+@ cdecl ADL2_Display_FreeSync_Cap(ptr long long ptr)
 @ stub ADL2_Display_GamutMapping_Get
 @ stub ADL2_Display_GamutMapping_Reset
 @ stub ADL2_Display_GamutMapping_Set
@@ -315,7 +315,7 @@
 @ stub ADL2_Display_ModeTimingOverride_Delete
 @ stub ADL2_Display_ModeTimingOverride_Get
 @ stub ADL2_Display_ModeTimingOverride_Set
-@ stub ADL2_Display_Modes_Get
+@ cdecl ADL2_Display_Modes_Get(ptr long long ptr ptr)
 @ stub ADL2_Display_Modes_Set
 @ stub ADL2_Display_Modes_X2_Get
 @ stub ADL2_Display_MonitorPowerState_Set
@@ -387,7 +387,7 @@
 @ stub ADL2_Display_Size_Get
 @ stub ADL2_Display_Size_Set
 @ stub ADL2_Display_SourceContentAttribute_Get
-@ stub ADL2_Display_SourceContentAttribute_Set
+@ cdecl ADL2_Display_SourceContentAttribute_Set(ptr long long ptr)
 @ stub ADL2_Display_SplitDisplay_Caps
 @ stub ADL2_Display_SplitDisplay_Get
 @ stub ADL2_Display_SplitDisplay_RestoreDesktopConfiguration
@@ -433,6 +433,7 @@
 @ stub ADL2_Graphics_MantleVersion_Get
 @ cdecl ADL2_Graphics_Platform_Get(ptr ptr)
 @ cdecl ADL2_Graphics_VersionsX2_Get(ptr ptr)
+@ cdecl ADL2_Graphics_VersionsX3_Get(ptr long ptr)
 @ cdecl ADL2_Graphics_Versions_Get(ptr ptr)
 @ stub ADL2_Graphics_VulkanVersion_Get
 @ stub ADL2_HybridGraphicsGPU_Set
@@ -687,7 +688,7 @@
 @ stub ADL_Adapter_Active_Get
 @ stub ADL_Adapter_Active_Set
 @ stub ADL_Adapter_Active_SetPrefer
-@ stub ADL_Adapter_AdapterInfoX2_Get
+@ cdecl ADL_Adapter_AdapterInfoX2_Get(ptr)
 @ cdecl ADL_Adapter_AdapterInfo_Get(ptr long)
 @ stub ADL_Adapter_AdapterList_Disable
 @ stub ADL_Adapter_Aspects_Get
@@ -864,7 +865,7 @@
 @ stub ADL_Display_FormatsOverride_Set
 @ stub ADL_Display_FreeSyncState_Get
 @ stub ADL_Display_FreeSyncState_Set
-@ stub ADL_Display_FreeSync_Cap
+@ cdecl ADL_Display_FreeSync_Cap(long long ptr)
 @ stub ADL_Display_GamutMapping_Get
 @ stub ADL_Display_GamutMapping_Reset
 @ stub ADL_Display_GamutMapping_Set
@@ -890,7 +891,7 @@
 @ stub ADL_Display_ModeTimingOverride_Delete
 @ stub ADL_Display_ModeTimingOverride_Get
 @ stub ADL_Display_ModeTimingOverride_Set
-@ stub ADL_Display_Modes_Get
+@ cdecl ADL_Display_Modes_Get(long long ptr ptr)
 @ stub ADL_Display_Modes_Set
 @ stub ADL_Display_MonitorPowerState_Set
 @ stub ADL_Display_NativeAUXChannel_Access
@@ -947,7 +948,7 @@
 @ stub ADL_Display_Size_Get
 @ stub ADL_Display_Size_Set
 @ stub ADL_Display_SourceContentAttribute_Get
-@ stub ADL_Display_SourceContentAttribute_Set
+@ cdecl ADL_Display_SourceContentAttribute_Set(long long ptr)
 @ stub ADL_Display_SplitDisplay_Caps
 @ stub ADL_Display_SplitDisplay_Get
 @ stub ADL_Display_SplitDisplay_RestoreDesktopConfiguration
