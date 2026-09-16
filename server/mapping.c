@@ -807,7 +807,7 @@ static int load_reloc_target( void *value, size_t size, size_t va, size_t header
                               unsigned int nb_sec )
 {
     if (load_data_dir( value, size, va, size, align_mask, unix_fd, sec, nb_sec ) == size) return 1;
-    if (va && size <= header_size && va <= header_size - size &&
+    if (size <= header_size && va <= header_size - size &&
         pread( unix_fd, value, size, va ) == size) return 1;
     return 0;
 }
