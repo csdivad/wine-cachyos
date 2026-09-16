@@ -805,7 +805,6 @@ static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
                                  client_ptr_t image_base, mem_size_t image_size )
 {
     size_t offset = 0;
-    int found_effective = 0;
 
     if (!data->VirtualAddress || !data->Size) return 0;
 
@@ -815,19 +814,22 @@ static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
         size_t entries_size, entries_offset;
         int ret;
 
+        /* the runtime walks the directory as: while (rel < end - 1 && rel->SizeOfBlock)
+         * (dlls/ntdll/loader.c), so a partial trailing header and a zero block end the walk
+         * instead of invalidating it - keep whatever was found up to that point */
         if (data->Size - offset < sizeof(base))
-            return 0;
+            break;
 
         ret = load_data_dir( &base, sizeof(base), data->VirtualAddress + offset, data->Size - offset,
                              align_mask, unix_fd, sec, nb_sec );
 
         if (ret != sizeof(base))
-            return 0;
+            break;
 
-        if (base.SizeOfBlock < sizeof(base))
-            return 0;
+        if (!base.SizeOfBlock)
+            break;
 
-        if (base.SizeOfBlock > data->Size - offset)
+        if (base.SizeOfBlock < sizeof(base) || base.SizeOfBlock > data->Size - offset)
             return 0;
 
         if (base.SizeOfBlock & 3)
@@ -839,62 +841,57 @@ static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
 
         entries_size = base.SizeOfBlock - sizeof(base);
 
-        for ( entries_offset = 0; entries_offset < entries_size; entries_offset += sizeof(USHORT) )
+        /* read the block's entries in one call instead of one call per entry - this walk runs
+         * for every SEC_IMAGE mapping that carries a relocation directory */
+        for (entries_offset = 0; entries_offset < entries_size; )
         {
-            USHORT entry;
-            USHORT type;
+            USHORT entries[256], type, entry;
+            size_t chunk = min( entries_size - entries_offset, sizeof(entries) ), i;
             size_t target_va;
 
-            ret = load_data_dir(
-                &entry, sizeof(entry),
-                data->VirtualAddress + offset + sizeof(base) + entries_offset,
-                entries_size - entries_offset,
-                align_mask, unix_fd, sec, nb_sec );
+            ret = load_data_dir( entries, chunk,
+                                 data->VirtualAddress + offset + sizeof(base) + entries_offset,
+                                 entries_size - entries_offset,
+                                 align_mask, unix_fd, sec, nb_sec );
+            if (ret != chunk)
+                break;
 
-            if (ret != sizeof(entry))
-                return 0;
-
-            type = entry >> 12;
-            target_va = base.VirtualAddress + (entry & 0xfff);
-
-            switch (type)
+            for (i = 0; i < chunk; i += sizeof(USHORT))
             {
-            case IMAGE_REL_BASED_HIGHLOW:
-            {
-                DWORD value;
+                entry = entries[i / sizeof(USHORT)];
+                type = entry >> 12;
+                target_va = base.VirtualAddress + (entry & 0xfff);
 
-                ret = load_data_dir( &value, sizeof(value), target_va, sizeof(value),
-                                     align_mask, unix_fd, sec, nb_sec );
-                if (ret != sizeof(value))
-                    return 0;
-                if ((client_ptr_t)value - image_base < image_size)
-                    found_effective = 1;
-                break;
-            }
-            case IMAGE_REL_BASED_DIR64:
-            {
-                ULONGLONG value;
+                if (type == IMAGE_REL_BASED_ABSOLUTE) continue;
 
-                ret = load_data_dir( &value, sizeof(value), target_va, sizeof(value),
-                                     align_mask, unix_fd, sec, nb_sec );
-                if (ret != sizeof(value))
-                    return 0;
-                if ((client_ptr_t)value - image_base < image_size)
-                    found_effective = 1;
-                break;
+                if (type == IMAGE_REL_BASED_HIGHLOW || type == IMAGE_REL_BASED_DIR64)
+                {
+                    union { DWORD d; ULONGLONG q; } value;
+                    size_t value_size = (type == IMAGE_REL_BASED_HIGHLOW) ? sizeof(DWORD) : sizeof(ULONGLONG);
+
+                    ret = load_data_dir( &value, value_size, target_va, value_size,
+                                         align_mask, unix_fd, sec, nb_sec );
+                    if (ret != value_size)
+                        break;
+                    if (value_size == sizeof(ULONGLONG) ? ((client_ptr_t)value.q - image_base < image_size)
+                                                        : ((client_ptr_t)value.d - image_base < image_size))
+                        return 1;
+                    continue;
+                }
+
+                return 1;   /* any other type is effective by definition */
             }
-            case IMAGE_REL_BASED_ABSOLUTE:
+
+            if (ret != chunk)   /* a partial entry read ends the walk, like the loader's loop */
                 break;
-            default:
-                found_effective = 1;
-                break;
-            }
+
+            entries_offset += chunk;
         }
 
         offset += base.SizeOfBlock;
     }
 
-    return found_effective;
+    return 0;   /* directory ended without an effective relocation */
 }
 
 /* retrieve the mapping parameters for an executable (PE) image */
