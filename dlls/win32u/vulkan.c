@@ -3306,6 +3306,20 @@ static BOOL surface_get_fshack_dpi( struct surface *surface )
     return fshack_enabled && dpi != raw ? raw : 0;
 }
 
+static BOOL needs_extra_swapchain_image(void)
+{
+    static const WCHAR doom_eternalW[] =
+        {'D','O','O','M','E','t','e','r','n','a','l','x','6','4','v','k','.','e','x','e',0};
+    static const WCHAR doom_dark_agesW[] =
+        {'D','O','O','M','T','h','e','D','a','r','k','A','g','e','s','.','e','x','e',0};
+    const WCHAR *p, *name = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
+
+    if (!name) return FALSE;
+    if ((p = wcsrchr( name, '/' ))) name = p + 1;
+    if ((p = wcsrchr( name, '\\' ))) name = p + 1;
+    return !wcsicmp( name, doom_eternalW ) || !wcsicmp( name, doom_dark_agesW );
+}
+
 static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwapchainCreateInfoKHR *create_info,
                                              const VkAllocationCallbacks *allocator, VkSwapchainKHR *ret )
 {
@@ -3342,10 +3356,10 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
     create_info_host.imageExtent.width = max( create_info_host.imageExtent.width, capabilities.minImageExtent.width );
     create_info_host.imageExtent.height = max( create_info_host.imageExtent.height, capabilities.minImageExtent.height );
 
-    /* DOOM Eternal and DOOM: The Dark Ages rely on an extra image to continue
-     * acquiring while an earlier image is still pending presentation. Request
-     * one when the application asks for exactly the surface minimum. */
-    if (capabilities.minImageCount < UINT32_MAX &&
+    /* Restrict the extra-image workaround to the DOOM games: Hades, for example,
+     * indexes three-entry per-image resource arrays. Keep the minimum/maximum and
+     * overflow checks. */
+    if (needs_extra_swapchain_image() && capabilities.minImageCount < UINT32_MAX &&
         create_info_host.minImageCount == capabilities.minImageCount &&
         (!capabilities.maxImageCount || capabilities.minImageCount < capabilities.maxImageCount))
     {
