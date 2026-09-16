@@ -50,14 +50,18 @@ extern HRESULT get_audio_session(const GUID *sessionguid, IMMDevice *device, UIN
                                  struct audio_session **out);
 extern struct audio_session_wrapper *session_wrapper_create(struct audio_client *client);
 
-static HANDLE main_loop_thread;
-
-void main_loop_stop(void)
+static BOOL device_fake_exclusive(void)
 {
-    if (main_loop_thread) {
-        WaitForSingleObject(main_loop_thread, INFINITE);
-        CloseHandle(main_loop_thread);
-    }
+    WCHAR str[10];
+    DWORD ret = GetEnvironmentVariableW(L"PROTON_MMDEV_FAKE_EXCLUSIVE", str, ARRAY_SIZE(str));
+
+    if (!ret)
+        return FALSE;
+
+    if (ret == 1 && str[0] == L'0')
+        return FALSE;
+
+    return TRUE;
 }
 
 void set_stream_volumes(struct audio_client *This)
@@ -210,58 +214,11 @@ static void dump_fmt(const WAVEFORMATEX *fmt)
     }
 }
 
-static DWORD CALLBACK main_loop_func(void *event)
-{
-    struct main_loop_params params;
-
-    SetThreadDescription(GetCurrentThread(), L"audio_client_main");
-
-    params.event = event;
-
-    wine_unix_call(main_loop, &params);
-
-    return 0;
-}
-
-HRESULT main_loop_start(void)
-{
-    if (!main_loop_thread) {
-        HANDLE event = CreateEventW(NULL, TRUE, FALSE, NULL);
-        if (!(main_loop_thread = CreateThread(NULL, 0, main_loop_func, event, 0, NULL))) {
-            ERR("Failed to create main loop thread\n");
-            CloseHandle(event);
-            return E_FAIL;
-        }
-
-        SetThreadPriority(main_loop_thread, THREAD_PRIORITY_TIME_CRITICAL);
-        WaitForSingleObject(event, INFINITE);
-        CloseHandle(event);
-    }
-
-    return S_OK;
-}
-
-static DWORD CALLBACK timer_loop_func(void *user)
-{
-    struct timer_loop_params params;
-    struct audio_client *This = user;
-
-    SetThreadDescription(GetCurrentThread(), L"audio_client_timer");
-
-    params.stream = This->stream;
-
-    wine_unix_call(timer_loop, &params);
-
-    return 0;
-}
-
-HRESULT stream_release(stream_handle stream, HANDLE timer_thread)
+static HRESULT stream_release(stream_handle stream)
 {
     struct release_stream_params params;
 
-    params.stream       = stream;
-    params.timer_thread = timer_thread;
-
+    params.stream = stream;
     wine_unix_call(release_stream, &params);
 
     return params.result;
@@ -269,9 +226,15 @@ HRESULT stream_release(stream_handle stream, HANDLE timer_thread)
 
 static BOOL query_productname(void *data, LANGANDCODEPAGE *lang, LPVOID *buffer, UINT *len)
 {
-    WCHAR pn[37];
+    WCHAR pn[37], *name;
+
     swprintf(pn, ARRAY_SIZE(pn), L"\\StringFileInfo\\%04x%04x\\ProductName", lang->wLanguage, lang->wCodePage);
-    return VerQueryValueW(data, pn, buffer, len) && *len;
+    if (!VerQueryValueW(data, pn, buffer, len) || !*len)
+        return FALSE;
+    for (name = *buffer; *name; name++)
+        if (*name > ' ')
+            return TRUE;
+    return FALSE;
 }
 
 WCHAR *get_application_name(void)
@@ -532,10 +495,7 @@ static HRESULT stream_init(struct audio_client *client, const BOOLEAN force_def_
         return AUDCLNT_E_ALREADY_INITIALIZED;
     }
 
-    if (FAILED(params.result = main_loop_start())) {
-        sessions_unlock();
-        return params.result;
-    }
+    wine_unix_call( main_loop_start, NULL );
 
     if (flags & AUDCLNT_STREAMFLAGS_LOOPBACK) {
         struct get_loopback_capture_device_params params;
@@ -606,7 +566,7 @@ static HRESULT stream_init(struct audio_client *client, const BOOLEAN force_def_
 
 exit:
     if (FAILED(params.result)) {
-        stream_release(stream, NULL);
+        stream_release(stream);
         free(client->vols);
         client->vols = NULL;
     } else {
@@ -794,7 +754,7 @@ static ULONG WINAPI client_Release(IAudioClient3 *iface)
         free(This->vols);
 
         if (This->stream)
-            stream_release(This->stream, This->timer_thread);
+            stream_release(This->stream);
 
         free(This->device_name);
         free(This);
@@ -812,6 +772,9 @@ static HRESULT WINAPI client_Initialize(IAudioClient3 *iface, AUDCLNT_SHAREMODE 
     TRACE("(%p)->(%x, %lx, %s, %s, %p, %s)\n", This, mode, flags, wine_dbgstr_longlong(duration),
                                                wine_dbgstr_longlong(period), fmt,
                                                debugstr_guid(sessionguid));
+
+    if (mode == AUDCLNT_SHAREMODE_EXCLUSIVE && device_fake_exclusive())
+        mode = AUDCLNT_SHAREMODE_SHARED;
 
     return stream_init(This, TRUE, mode, flags, duration, period, fmt, sessionguid);
 }
@@ -884,6 +847,7 @@ static HRESULT WINAPI client_IsFormatSupported(IAudioClient3 *iface, AUDCLNT_SHA
 {
     struct audio_client *This = impl_from_IAudioClient3(iface);
     struct is_format_supported_params params;
+    BOOL fake_exclusive = FALSE;
     HRESULT hr;
 
     TRACE("(%p)->(%x, %p, %p)\n", This, mode, fmt, out);
@@ -895,6 +859,11 @@ static HRESULT WINAPI client_IsFormatSupported(IAudioClient3 *iface, AUDCLNT_SHA
         return E_POINTER;
 
     dump_fmt(fmt);
+
+    if (mode == AUDCLNT_SHAREMODE_EXCLUSIVE && device_fake_exclusive()) {
+        mode = AUDCLNT_SHAREMODE_SHARED;
+        fake_exclusive = TRUE;
+    }
 
     hr = validate_wfx(fmt, mode);
 
@@ -913,7 +882,7 @@ static HRESULT WINAPI client_IsFormatSupported(IAudioClient3 *iface, AUDCLNT_SHA
     }
 
     if (hr == S_FALSE) {
-        if (mode == AUDCLNT_SHAREMODE_EXCLUSIVE) {
+        if (mode == AUDCLNT_SHAREMODE_EXCLUSIVE || fake_exclusive) {
             return AUDCLNT_E_UNSUPPORTED_FORMAT;
         } else {
             if (FAILED(hr = IAudioClient3_GetMixFormat(iface, out)))
@@ -987,15 +956,6 @@ static HRESULT WINAPI client_Start(IAudioClient3 *iface)
 
     params.stream = This->stream;
     wine_unix_call(start, &params);
-
-    if (SUCCEEDED(params.result) && !This->timer_thread) {
-        if ((This->timer_thread = CreateThread(NULL, 0, timer_loop_func, This, 0, NULL)))
-            SetThreadPriority(This->timer_thread, THREAD_PRIORITY_TIME_CRITICAL);
-        else {
-            IAudioClient3_Stop(&This->IAudioClient3_iface);
-            params.result = E_FAIL;
-        }
-    }
 
     sessions_unlock();
 

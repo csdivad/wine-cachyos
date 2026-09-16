@@ -117,7 +117,11 @@ void *opengl_drawable_create( UINT size, const struct opengl_drawable_funcs *fun
     drawable->interval = INT_MIN;
     drawable->doublebuffer = !!(pixel_formats[format - 1].pfd.dwFlags & PFD_DOUBLEBUFFER);
     drawable->stereo = !!(pixel_formats[format - 1].pfd.dwFlags & PFD_STEREO);
-    if ((drawable->client = client)) client_surface_add_ref( client );
+    if ((drawable->client = client))
+    {
+        client_surface_add_ref( client );
+        InterlockedIncrement( &client->busy_ref );
+    }
     for (UINT i = 0; i < ARRAY_SIZE(drawable->buffer_map); i++) drawable->buffer_map[i] = GL_FRONT_LEFT + i;
 
     TRACE( "created %s\n", debugstr_opengl_drawable( drawable ) );
@@ -142,7 +146,11 @@ void opengl_drawable_release( struct opengl_drawable *drawable )
 
         drawable->funcs->destroy( drawable );
         if (drawable->surface) funcs->p_eglDestroySurface( egl->display, drawable->surface );
-        if (drawable->client) client_surface_release( drawable->client );
+        if (drawable->client)
+        {
+            InterlockedDecrement( &drawable->client->busy_ref );
+            client_surface_release( drawable->client );
+        }
         free( drawable );
     }
 }
@@ -1205,7 +1213,7 @@ static BOOL egldrv_describe_pixel_format( int format, struct wgl_pixel_format *d
     struct egl_platform *egl = &display_egl;
     int count = egl->config_count;
 
-    if (--format < 0 || format > ARRAY_SIZE(pixel_format_flags) * count) return FALSE;
+    if (--format < 0 || format >= ARRAY_SIZE(pixel_format_flags) * count) return FALSE;
     return describe_egl_config( egl->configs[format % count], desc, pixel_format_flags[format / count] );
 }
 
@@ -3111,7 +3119,7 @@ static BOOL query_renderer_integer( struct egl_platform *egl, GLenum attribute, 
     case WGL_RENDERER_DEVICE_ID_WINE: *value = egl->device_id; return TRUE;
     case WGL_RENDERER_VENDOR_ID_WINE: *value = egl->vendor_id; return TRUE;
     case WGL_RENDERER_UNIFIED_MEMORY_ARCHITECTURE_WINE: *value = 0; return TRUE;
-    case WGL_RENDERER_VERSION_WINE: memcpy( value, egl->version, 3 ); return TRUE;
+    case WGL_RENDERER_VERSION_WINE: memcpy( value, egl->version, sizeof(egl->version) ); return TRUE;
     case WGL_RENDERER_OPENGL_COMPATIBILITY_PROFILE_VERSION_WINE:
         value[0] = egl->compat_version / 10;
         value[1] = egl->compat_version % 10;

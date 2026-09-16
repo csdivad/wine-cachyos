@@ -1888,8 +1888,14 @@ static void init_logical_proc_info(void)
         {
             if (p->Relationship == RelationNumaNode || p->Relationship == RelationNumaNodeEx)
             {
-                numa_info.ActiveProcessorsGroupAffinity[p->NumaNode.NodeNumber] = p->NumaNode.GroupMask;
-                ++numa_node_count;
+                if (p->NumaNode.NodeNumber < MAXIMUM_NUMA_NODE_COUNT)
+                {
+                    numa_info.ActiveProcessorsGroupAffinity[p->NumaNode.NodeNumber] = p->NumaNode.GroupMask;
+                    ++numa_node_count;
+                }
+                else
+                    WARN( "Ignoring NUMA node %u, only up to %u are supported.\n",
+                          p->NumaNode.NodeNumber, MAXIMUM_NUMA_NODE_COUNT );
             }
             p = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)((char *)p + p->Size);
         }
@@ -4866,6 +4872,19 @@ NTSTATUS WINAPI NtPowerInformation( POWER_INFORMATION_LEVEL level, void *input, 
         PowerCaps->RtcWake = PowerSystemSleeping1;
         PowerCaps->MinDeviceWakeState = PowerSystemUnspecified;
         PowerCaps->DefaultLowLatencyWake = PowerSystemUnspecified;
+        return STATUS_SUCCESS;
+    }
+
+    case SystemPowerInformation:
+    {
+        static int once;
+        SYSTEM_POWER_INFORMATION *info = output;
+
+        if (!once++) FIXME("semi-stub: SystemPowerInformation\n");
+        if (out_size < sizeof(SYSTEM_POWER_INFORMATION)) return STATUS_BUFFER_TOO_SMALL;
+        memset(info, 0, sizeof(SYSTEM_POWER_INFORMATION));
+        info->MaxIdlenessAllowed = 100;
+        info->TimeRemaining = 600;
         return STATUS_SUCCESS;
     }
 

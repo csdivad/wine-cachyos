@@ -973,7 +973,7 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
     if (mapping->image.alignment & page_mask)
         mapping->image.image_flags |= IMAGE_FLAGS_ImageMappedFlat;
     else if ((mapping->image.dll_charact & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE) &&
-             (has_relocs || mapping->image.contains_code) && !(clr_va && clr_size))
+             has_relocs && !(clr_va && clr_size))
         mapping->image.image_flags |= IMAGE_FLAGS_ImageDynamicallyRelocated;
 
     align_mask = max( mapping->image.alignment - 1, page_mask );
@@ -1260,8 +1260,8 @@ void generate_startup_debug_events( struct process *process )
     /* generate creation events */
     LIST_FOR_EACH_ENTRY( thread, &process->thread_list, struct thread, proc_entry )
     {
-        if (thread != first_thread)
-            generate_debug_event( thread, DbgCreateThreadStateChange, NULL );
+        if (thread->is_system) continue;
+        if (thread != first_thread) generate_debug_event( thread, DbgCreateThreadStateChange, NULL );
     }
 
     /* generate dll events (in loading order) */
@@ -1309,8 +1309,6 @@ static client_ptr_t assign_map_address( struct mapping *mapping )
     client_ptr_t ret;
     struct addr_range *range = (mapping->image.base >> 32) ? &ranges64 : &ranges32;
     mem_size_t size = round_size( mapping->size, granularity_mask );
-
-    if (!(mapping->image.image_charact & IMAGE_FILE_DLL)) return 0;
 
     if ((ret = get_fd_map_address( mapping->fd ))) return ret;
 

@@ -543,6 +543,7 @@ void WINAPI RtlAcquireSRWLockExclusive( RTL_SRWLOCK *lock )
         } while (InterlockedCompareExchange( u.l, new.l, old.l ) != old.l);
 
         if (!wait) return;
+        terminate_process_on_shutdown();
         RtlWaitOnAddress( &u.s->owners, &new.s.owners, sizeof(short), NULL );
     }
 }
@@ -582,6 +583,7 @@ void WINAPI RtlAcquireSRWLockShared( RTL_SRWLOCK *lock )
         } while (InterlockedCompareExchange( u.l, new.l, old.l ) != old.l);
 
         if (!wait) return;
+        terminate_process_on_shutdown();
         RtlWaitOnAddress( u.s, &new.s, sizeof(struct srw_lock), NULL );
     }
 }
@@ -836,19 +838,38 @@ struct futex_queue
     LONG lock;
 };
 
-static struct futex_queue futex_queues[256];
+static struct futex_queue futex_queues[1024];
 
 static struct futex_queue *get_futex_queue( const void *addr )
 {
-    ULONG_PTR val = (ULONG_PTR)addr;
+    ULONG_PTR val = (ULONG_PTR)addr >> 4;
 
-    return &futex_queues[(val >> 4) % ARRAY_SIZE(futex_queues)];
+    /* Mix the bits a bit to avoid collisions on low bits. */
+    val ^= val >> 11;
+    val ^= val >> 22;
+    return &futex_queues[val % ARRAY_SIZE(futex_queues)];
 }
 
 static void spin_lock( LONG *lock )
 {
-    while (InterlockedCompareExchange( lock, -1, 0 ))
+    unsigned int i;
+
+    if (!InterlockedCompareExchange( lock, -1, 0 ))
+        return;
+
+    for (i = 0; i < 64; i++)
+    {
         YieldProcessor();
+        if (!ReadNoFence( lock ) && !InterlockedCompareExchange( lock, -1, 0 ))
+            return;
+    }
+
+    for (;;)
+    {
+        NtYieldExecution();
+        if (!ReadNoFence( lock ) && !InterlockedCompareExchange( lock, -1, 0 ))
+            return;
+    }
 }
 
 static void spin_unlock( LONG *lock )

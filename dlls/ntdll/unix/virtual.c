@@ -574,7 +574,7 @@ static void mmap_add_reserved_area( void *addr, SIZE_T size )
     assert( !((UINT_PTR)addr & host_page_mask) );
     assert( !(size & host_page_mask) );
 
-    if (!((intptr_t)addr + size)) size--;  /* avoid wrap-around */
+    if (!((intptr_t)addr + size)) size -= host_page_size;  /* avoid wrap-around */
     end = (char *)addr + size;
 
     LIST_FOR_EACH( ptr, &reserved_areas )
@@ -626,7 +626,7 @@ static void mmap_remove_reserved_area( void *addr, SIZE_T size )
     assert( !((UINT_PTR)addr & host_page_mask) );
     assert( !(size & host_page_mask) );
 
-    if (!((intptr_t)addr + size)) size--;  /* avoid wrap-around */
+    if (!((intptr_t)addr + size)) size -= host_page_size;  /* avoid wrap-around */
 
     ptr = list_head( &reserved_areas );
     /* find the first area covering address */
@@ -686,9 +686,10 @@ static int mmap_is_in_reserved_area( void *addr, SIZE_T size )
 
     LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
     {
-        if (area->base > addr) break;
+        if ((char *)area->base > (char *)addr + size) break;
         if ((char *)area->base + area->size <= (char *)addr) continue;
         /* area must contain block completely */
+        if (area->base > addr) return -1;
         if ((char *)area->base + area->size < (char *)addr + size) return -1;
         return 1;
     }
@@ -975,7 +976,7 @@ static void load_steam_overlay(const char *unix_lib_path)
     unsigned int len;
     void *handle;
 
-    if (!strstr(unix_lib_path, "winex11.so")) return;
+    if (!strstr(unix_lib_path, "winex11.so") && !strstr(unix_lib_path, "winewayland.so")) return;
     if (getenv("LD_PRELOAD") || !(preload = getenv("WINE_LD_PRELOAD"))) return;
 
     p = preload;
@@ -2569,7 +2570,7 @@ static NTSTATUS map_view( struct file_view **view_ret, void *base, size_t size,
 
             clear_native_views();
             if (!is_win64) increase_try_map_step = FALSE;
-            ptr = alloc_free_area( (void *)limit_low, (void *)limit_high, size, top_down, unix_prot, align_mask );
+            ptr = alloc_free_area( start, end, host_size, top_down, unix_prot, align_mask );
             if (!is_win64) increase_try_map_step = TRUE;
             if (!ptr) return STATUS_NO_MEMORY;
         }
@@ -3644,6 +3645,7 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
                                    USHORT machine, struct pe_image_info *image_info,
                                    UNICODE_STRING *nt_name, BOOL is_builtin, off_t offset)
 {
+    const char *disable_exe_aslr = getenv( "WINE_DISABLE_EXE_ASLR" );
     int unix_fd = -1, needs_close;
     int shared_fd = -1, shared_needs_close = 0;
     SIZE_T size = image_info->map_size;
@@ -3665,7 +3667,8 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
     }
 
     if (!image_info->map_addr &&
-        (image_info->image_charact & IMAGE_FILE_DLL) &&
+        ((image_info->image_charact & IMAGE_FILE_DLL) || !disable_exe_aslr ||
+         strcmp( disable_exe_aslr, "1" )) &&
         (image_info->image_flags & IMAGE_FLAGS_ImageDynamicallyRelocated))
     {
         SERVER_START_REQ( get_image_map_address )
@@ -5426,7 +5429,13 @@ void virtual_set_large_address_space(void)
                 free_reserved_memory( 0, (char *)0x7ffe0000 );
 #endif
         }
-        else user_space_wow_limit = (is_large_address_aware() ? limit_4g : limit_2g) - 1;
+        else if (is_large_address_aware())
+        {
+            user_space_wow_limit = limit_4g - 1;
+            /* reserve space for top-down allocations; some apps break if the entire high 2G is available */
+            reserve_area( (void *)0xfff00000, (void *)0xffff0000 );
+        }
+        else user_space_wow_limit = limit_2g - 1;
     }
     else
     {
@@ -5646,10 +5655,6 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
         case MemExtendedParameterAddressRequirements:
         {
             MEM_ADDRESS_REQUIREMENTS *r = parameters[i].Pointer;
-            ULONG_PTR limit;
-
-            if (is_wow64()) limit = get_wow_user_space_limit();
-            else limit = (ULONG_PTR)user_space_limit;
 
             if (r->Alignment)
             {
@@ -5663,7 +5668,7 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
             if (r->LowestStartingAddress)
             {
                 *limit_low = (ULONG_PTR)r->LowestStartingAddress;
-                if (*limit_low >= limit || (*limit_low & granularity_mask))
+                if (*limit_low >= (ULONG_PTR)user_space_limit || (*limit_low & granularity_mask))
                 {
                     WARN( "Invalid limit %p.\n", r->LowestStartingAddress );
                     return STATUS_INVALID_PARAMETER;
@@ -5672,7 +5677,7 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
             if (r->HighestEndingAddress)
             {
                 *limit_high = (ULONG_PTR)r->HighestEndingAddress;
-                if (*limit_high > limit ||
+                if (*limit_high > (ULONG_PTR)user_space_limit ||
                     *limit_high <= *limit_low ||
                     ((*limit_high + 1) & (page_mask - 1)))
                 {
@@ -6130,8 +6135,11 @@ static unsigned int get_basic_memory_info( HANDLE process, LPCVOID addr,
             info->AllocationProtect = result.virtual_query.alloc_prot;
             info->State             = (DWORD)result.virtual_query.state << 12;
             info->Type              = (DWORD)result.virtual_query.alloc_type << 16;
-            if (info->RegionSize != result.virtual_query.size)  /* truncated */
-                return STATUS_INVALID_PARAMETER;  /* FIXME */
+#ifndef _WIN64
+            if (result.virtual_query.base >= ~granularity_mask) return STATUS_INVALID_PARAMETER;
+            if ((result.virtual_query.base + result.virtual_query.size) >> 32)  /* overflow */
+                info->RegionSize = ~granularity_mask - result.virtual_query.base;
+#endif
             if (res_len) *res_len = sizeof(*info);
         }
         return result.virtual_query.status;
