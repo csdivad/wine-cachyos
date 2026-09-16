@@ -1312,7 +1312,7 @@ int CDECL ADL2_Display_SourceContentAttribute_Set(ADL_CONTEXT_HANDLE ptr, int ad
 
     if (adapter_index >= ptr->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
     gpu = ptr->adapters[adapter_index].gpu;
-    if (gpu->display_count >= display_index) return ADL_ERR_INVALID_ADL_IDX;
+    if (display_index >= gpu->display_count) return ADL_ERR_INVALID_ADL_IDX;
 
     if (attributes->unk != 2)
     {
