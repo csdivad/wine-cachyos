@@ -833,7 +833,7 @@ int CDECL ADL2_Adapter_Active_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int
 {
     TRACE("ctx %p, adapter_index %d, status %p.\n", ctx, adapter_index, status);
 
-    if (adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
+    if (adapter_index < 0 || adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
     *status = ctx->adapters[adapter_index].active;
     return ADL_OK;
 }
@@ -847,7 +847,7 @@ int CDECL ADL2_Display_DisplayInfo_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index
 
     if (info == NULL || num_displays == NULL) return ADL_ERR_NULL_POINTER;
 
-    if (adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_PARAM;
+    if (adapter_index < 0 || adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_PARAM;
 
     gpu = ctx->adapters[adapter_index].gpu;
     *num_displays = gpu->display_count;
@@ -893,9 +893,9 @@ int CDECL ADL2_Display_DDCInfo2_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, i
     memset(info, 0, sizeof(*info));
     info->ulSize = sizeof(*info);
 
-    if (adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_PARAM;
+    if (adapter_index < 0 || adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_PARAM;
     gpu = ctx->adapters[adapter_index].gpu;
-    if (display_index >= gpu->display_count) return ADL_OK;
+    if (display_index < 0 || display_index >= gpu->display_count) return ADL_OK;
     display = &gpu->displays[display_index];
 
     desc = &display->dxgi_output_desc;
@@ -962,6 +962,9 @@ int CDECL ADL2_Adapter_ASICFamilyType_Get(ADL_CONTEXT_HANDLE ctx, int adapter_in
     if (asic_type == NULL || valids == NULL)
         return ADL_ERR_NULL_POINTER;
 
+    if (adapter_index < 0 || adapter_index >= ctx->adapter_count)
+        return ADL_ERR_INVALID_ADL_IDX;
+
     if (ctx->adapters[adapter_index].gpu->vendor_id != VENDOR_AMD)
         return ADL_ERR_NOT_SUPPORTED;
 
@@ -1020,7 +1023,7 @@ int CDECL ADL2_Adapter_ObservedClockInfo_Get(ADL_CONTEXT_HANDLE ctx, int adapter
     FIXME("ctx %p, adapter %d, core_clock %p, memory_clock %p, stub.\n", ctx, adapter_index, core_clock, memory_clock);
 
     if (core_clock == NULL || memory_clock == NULL) return ADL_ERR;
-    if (adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
+    if (adapter_index < 0 || adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
     if (ctx->adapters[adapter_index].gpu->vendor_id != VENDOR_AMD) return ADL_ERR_INVALID_ADL_IDX;
 
     /* default values based on RX580 */
@@ -1059,7 +1062,7 @@ int CDECL ADL2_Adapter_MemoryInfo_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index,
     FIXME("ctx %p, adapter %d, mem_info %p stub.\n", ctx, adapter_index, mem_info);
 
     if (mem_info == NULL) return ADL_ERR_NULL_POINTER;
-    if (adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
+    if (adapter_index < 0 || adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
     if (ctx->adapters[adapter_index].gpu->vendor_id != VENDOR_AMD) return ADL_ERR;
 
     mem_info->iMemorySize = ctx->adapters[adapter_index].gpu->dxgi_adapter_desc.DedicatedVideoMemory;
@@ -1122,7 +1125,7 @@ int CDECL ADL2_Display_DisplayMapConfig_Get(ADL_CONTEXT_HANDLE ctx, int adapter_
             ctx, adapter_index, display_map_count, display_maps, display_target_count,
             display_targets, options);
 
-    if (adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
+    if (adapter_index < 0 || adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
     gpu = ctx->adapters[adapter_index].gpu;
     if (!gpu->display_count) return ADL_ERR_NOT_SUPPORTED;
     *display_map_count = gpu->display_count;
@@ -1310,9 +1313,9 @@ int CDECL ADL2_Display_SourceContentAttribute_Set(ADL_CONTEXT_HANDLE ptr, int ad
     int ret = ADL_OK;
     TRACE("ctx %p adapter %d display %d attr %p\n", ptr, adapter_index, display_index, attributes);
 
-    if (adapter_index >= ptr->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
+    if (adapter_index < 0 || adapter_index >= ptr->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
     gpu = ptr->adapters[adapter_index].gpu;
-    if (display_index >= gpu->display_count) return ADL_ERR_INVALID_ADL_IDX;
+    if (display_index < 0 || display_index >= gpu->display_count) return ADL_ERR_INVALID_ADL_IDX;
 
     if (attributes->unk != 2)
     {
