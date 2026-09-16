@@ -805,6 +805,7 @@ static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
                                  client_ptr_t image_base, mem_size_t image_size )
 {
     size_t offset = 0;
+    int found_effective = 0;
 
     if (!data->VirtualAddress || !data->Size) return 0;
 
@@ -841,9 +842,11 @@ static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
 
         entries_size = base.SizeOfBlock - sizeof(base);
 
-        /* read the block's entries in one call instead of one call per entry - this walk runs
-         * for every SEC_IMAGE mapping that carries a relocation directory */
-        for (entries_offset = 0; entries_offset < entries_size; )
+        /* read each block's entries in one call instead of one call per entry - this walk runs for
+         * every SEC_IMAGE mapping that carries a relocation directory. Once an effective entry is
+         * seen the remaining entries no longer matter, but every block header still has to be
+         * validated: the runtime walks all of them. */
+        for (entries_offset = 0; entries_offset < entries_size && !found_effective; )
         {
             USHORT entries[256], type, entry;
             size_t chunk = min( entries_size - entries_offset, sizeof(entries) ), i;
@@ -854,7 +857,7 @@ static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
                                  entries_size - entries_offset,
                                  align_mask, unix_fd, sec, nb_sec );
             if (ret != chunk)
-                break;
+                return 0;   /* can't read the table: don't relocate what can't be validated */
 
             for (i = 0; i < chunk; i += sizeof(USHORT))
             {
@@ -866,24 +869,35 @@ static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
 
                 if (type == IMAGE_REL_BASED_HIGHLOW || type == IMAGE_REL_BASED_DIR64)
                 {
-                    union { DWORD d; ULONGLONG q; } value;
-                    size_t value_size = (type == IMAGE_REL_BASED_HIGHLOW) ? sizeof(DWORD) : sizeof(ULONGLONG);
+                    client_ptr_t value;
 
-                    ret = load_data_dir( &value, value_size, target_va, value_size,
-                                         align_mask, unix_fd, sec, nb_sec );
-                    if (ret != value_size)
-                        break;
-                    if (value_size == sizeof(ULONGLONG) ? ((client_ptr_t)value.q - image_base < image_size)
-                                                        : ((client_ptr_t)value.d - image_base < image_size))
-                        return 1;
+                    if (type == IMAGE_REL_BASED_HIGHLOW)
+                    {
+                        DWORD v;
+
+                        /* an unreadable target reads as zero in the mapped image: not effective */
+                        if (load_data_dir( &v, sizeof(v), target_va, sizeof(v),
+                                           align_mask, unix_fd, sec, nb_sec ) != sizeof(v))
+                            continue;
+                        value = v;
+                    }
+                    else
+                    {
+                        ULONGLONG v;
+
+                        if (load_data_dir( &v, sizeof(v), target_va, sizeof(v),
+                                           align_mask, unix_fd, sec, nb_sec ) != sizeof(v))
+                            continue;
+                        value = v;
+                    }
+
+                    if (value - image_base < image_size)
+                        found_effective = 1;
                     continue;
                 }
 
-                return 1;   /* any other type is effective by definition */
+                found_effective = 1;   /* any other type is effective by definition */
             }
-
-            if (ret != chunk)   /* a partial entry read ends the walk, like the loader's loop */
-                break;
 
             entries_offset += chunk;
         }
@@ -891,8 +905,9 @@ static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
         offset += base.SizeOfBlock;
     }
 
-    return 0;   /* directory ended without an effective relocation */
+    return found_effective;
 }
+
 
 /* retrieve the mapping parameters for an executable (PE) image */
 static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_size, int unix_fd )
