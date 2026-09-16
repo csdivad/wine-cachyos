@@ -1557,8 +1557,6 @@ static HRESULT wined3d_swapchain_init(struct wined3d_swapchain *swapchain, struc
     unsigned int i;
     HWND window;
 
-    wined3d_mutex_lock();
-
     if (desc->backbuffer_count > 1)
     {
         FIXME("The application requested more than one back buffer, this is not properly supported.\n"
@@ -1572,6 +1570,8 @@ static HRESULT wined3d_swapchain_init(struct wined3d_swapchain *swapchain, struc
 
     if (FAILED(hr = wined3d_swapchain_desc_validate_flags(desc)))
         return hr;
+
+    wined3d_mutex_lock();
 
     window = desc->device_window ? desc->device_window : device->create_parms.focus_window;
     TRACE("Using target window %p.\n", window);
