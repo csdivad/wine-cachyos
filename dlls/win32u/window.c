@@ -377,8 +377,10 @@ void add_window_client_surface( HWND hwnd, struct client_surface *surface )
 {
     pthread_mutex_lock( &surfaces_lock );
 
-    /* due to client surface reuse, this element may already be in the list */
-    if (!list_empty( &surface->entry )) list_remove( &surface->entry );
+    /* a reused surface may still be linked under its previous window; hwnd is
+     * cleared on detach, so it is the membership test here (unlinking an entry
+     * left over from a detach can write into an already freed surface) */
+    if (surface->hwnd) list_remove( &surface->entry );
 
     surface->hwnd = hwnd;
     list_add_tail( &client_surfaces, &surface->entry );
