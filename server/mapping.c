@@ -799,10 +799,23 @@ static int load_cfg_header( IMAGE_LOAD_CONFIG_DIRECTORY64 *cfg, size_t va, size_
     return 1;
 }
 
+/* load a relocation target from the image: the PE header region is mapped from the start of the
+ * file, so a target that lands in it can be read directly, while a target outside every section
+ * and outside the headers reads as the zero the view holds there */
+static int load_reloc_target( void *value, size_t size, size_t va, size_t header_size,
+                              size_t align_mask, int unix_fd, IMAGE_SECTION_HEADER *sec,
+                              unsigned int nb_sec )
+{
+    if (load_data_dir( value, size, va, size, align_mask, unix_fd, sec, nb_sec ) == size) return 1;
+    if (va && size <= header_size && va <= header_size - size &&
+        pread( unix_fd, value, size, va ) == size) return 1;
+    return 0;
+}
+
 /* check whether a base relocation directory contains any effective relocations */
 static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
                                  int unix_fd, IMAGE_SECTION_HEADER *sec, unsigned int nb_sec,
-                                 client_ptr_t image_base, mem_size_t image_size )
+                                 size_t header_size, client_ptr_t image_base, mem_size_t image_size )
 {
     size_t offset = 0;
     int found_effective = 0;
@@ -859,7 +872,7 @@ static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
             if (ret != chunk)
                 return 0;   /* can't read the table: don't relocate what can't be validated */
 
-            for (i = 0; i < chunk; i += sizeof(USHORT))
+            for (i = 0; i < chunk && !found_effective; i += sizeof(USHORT))
             {
                 entry = entries[i / sizeof(USHORT)];
                 type = entry >> 12;
@@ -875,9 +888,9 @@ static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
                     {
                         DWORD v;
 
-                        /* an unreadable target reads as zero in the mapped image: not effective */
-                        if (load_data_dir( &v, sizeof(v), target_va, sizeof(v),
-                                           align_mask, unix_fd, sec, nb_sec ) != sizeof(v))
+                        /* a target the image cannot supply reads as zero: not effective */
+                        if (!load_reloc_target( &v, sizeof(v), target_va, header_size,
+                                                align_mask, unix_fd, sec, nb_sec ))
                             continue;
                         value = v;
                     }
@@ -885,8 +898,8 @@ static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
                     {
                         ULONGLONG v;
 
-                        if (load_data_dir( &v, sizeof(v), target_va, sizeof(v),
-                                           align_mask, unix_fd, sec, nb_sec ) != sizeof(v))
+                        if (!load_reloc_target( &v, sizeof(v), target_va, header_size,
+                                                align_mask, unix_fd, sec, nb_sec ))
                             continue;
                         value = v;
                     }
@@ -1109,6 +1122,7 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
         reloc_dir && !(clr_va && clr_size) &&
         has_effective_relocs( reloc_dir, align_mask, unix_fd, sec,
                               nt.FileHeader.NumberOfSections,
+                              min( mapping->image.header_size, mapping->image.file_size ),
                               mapping->image.base, mapping->image.map_size ))
         mapping->image.image_flags |= IMAGE_FLAGS_ImageDynamicallyRelocated;
     else
