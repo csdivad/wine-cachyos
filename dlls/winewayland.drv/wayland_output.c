@@ -628,10 +628,9 @@ BOOL wayland_output_create(uint32_t id, uint32_t version)
         goto err;
     }
 
-    if (version < 3) goto err;
-
     output->wl_output = wl_registry_bind(process_wayland.wl_registry, id,
-                                         &wl_output_interface, 3);
+                                         &wl_output_interface,
+                                         version < 3 ? version : 3);
     output->global_id = id;
     wl_output_add_listener(output->wl_output, &output_listener, output);
 
@@ -732,7 +731,10 @@ void wayland_output_release(struct wayland_output *output)
         wp_image_description_v1_destroy(output->wp_image_description_v1);
     if (output->zxdg_output_v1)
         zxdg_output_v1_destroy(output->zxdg_output_v1);
-    wl_output_release(output->wl_output);
+    if (wl_proxy_get_version((struct wl_proxy *)output->wl_output) >= WL_OUTPUT_RELEASE_SINCE_VERSION)
+        wl_output_release(output->wl_output);
+    else
+        wl_output_destroy(output->wl_output);
     free(output);
 }
 
