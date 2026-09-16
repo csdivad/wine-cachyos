@@ -1168,7 +1168,10 @@ static HRESULT WINAPI client_GetSharedModeEnginePeriod(IAudioClient3 *iface,
         return hr;
 
     *default_period_frames = MulDiv(def_period, format->nSamplesPerSec, 10000000);
-    *min_period_frames     = MulDiv(min_period, format->nSamplesPerSec, 10000000);
+    /* the minimum has to survive the conversion back to ticks in
+     * client_InitializeSharedAudioStream(): round it up, MulDiv() rounds to nearest and can
+     * undershoot the device minimum */
+    *min_period_frames     = (min_period * format->nSamplesPerSec + 10000000 - 1) / (REFERENCE_TIME)10000000;
     *default_period_frames = max( *default_period_frames, *min_period_frames );
     *max_period_frames     = *default_period_frames;
     *unit_period_frames    = 1;
