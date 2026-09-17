@@ -930,11 +930,13 @@ static DWORD emulate_instruction( EXCEPTION_RECORD *rec, CONTEXT *context )
         {
             /* we are not a VM! */
             case VMW_PORT:
-                context->Rax = 0;
+                /* a 0x66 prefix selects the 16-bit form, which only writes AX */
+                if (long_op) context->Rax = 0;
+                else context->Rax &= ~(ULONGLONG)0xffff;
                 context->Rip += prefixlen + 1;
                 return ExceptionContinueExecution;
             default:
-                FIXME("Unkown port %#x!\n", port);
+                FIXME("Unknown port %#x!\n", port);
                 return ExceptionContinueSearch;
         }
     }
