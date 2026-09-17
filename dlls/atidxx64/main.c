@@ -277,6 +277,9 @@ HRESULT __thiscall AmdDxExt_IaSetPrimitiveTopology(IAmdDxExt *ext, unsigned int 
     /* We don't expose support for this */
     if (topology == AmdDxExtPrimitiveTopology_ExtScreenRectList) return E_NOTIMPL;
 
+    /* AMD-only token: D3D11 has no topology 8 */
+    if (topology == AmdDxExtPrimitiveTopology_ExtPatch) return E_NOTIMPL;
+
     /* We are required to expose quad list support */
     if (topology == AmdDxExtPrimitiveTopology_ExtQuadList)
     {
@@ -342,6 +345,9 @@ HRESULT __thiscall AmdDxExt_IaSetPrimitiveTopologyCtx(IAmdDxExt *iface, unsigned
 
     /* We don't expose support for this */
     if (topology == AmdDxExtPrimitiveTopology_ExtScreenRectList) return E_NOTIMPL;
+
+    /* AMD-only token: D3D11 has no topology 8 */
+    if (topology == AmdDxExtPrimitiveTopology_ExtPatch) return E_NOTIMPL;
 
     /* We are required to expose quad list support */
     if (topology == AmdDxExtPrimitiveTopology_ExtQuadList)
