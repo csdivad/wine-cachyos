@@ -78,6 +78,11 @@ HRESULT WINAPI AmdD3D11CreateDeviceExt(IDXGIAdapter *adapter, D3D_DRIVER_TYPE dr
 
     if (!pD3D11CreateDevice)
         pD3D11CreateDevice = (void*)GetProcAddress(d3d11_module, "D3D11CreateDevice");
+    if (!pD3D11CreateDevice)
+    {
+        ERR("Could not find D3D11CreateDevice.\n");
+        return E_FAIL;
+    }
 
     return pD3D11CreateDevice(adapter, driver_type, swrast, flags, feature_levels, levels, sdk_version,
             device_out, obtained_feature_level, immediate_context);
@@ -101,7 +106,12 @@ HRESULT WINAPI AmdD3D11CreateDeviceAndSwapChainExt(IDXGIAdapter *adapter, D3D_DR
         return ret;
 
     if (!pD3D11CreateDeviceAndSwapchain)
-        pD3D11CreateDeviceAndSwapchain = (void *)GetProcAddress(d3d11_module, "D3D11CreateDeviceAndSwapchain");
+        pD3D11CreateDeviceAndSwapchain = (void *)GetProcAddress(d3d11_module, "D3D11CreateDeviceAndSwapChain");
+    if (!pD3D11CreateDeviceAndSwapchain)
+    {
+        ERR("Could not find D3D11CreateDeviceAndSwapChain.\n");
+        return E_FAIL;
+    }
 
     return pD3D11CreateDeviceAndSwapchain(adapter, driver_type, swrast, flags, feature_levels, levels, sdk_version,
                                           swapchain_desc, swapchain, device_out, obtained_feature_level, immediate_context);
