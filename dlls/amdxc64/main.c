@@ -39,6 +39,29 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(amdxc);
 
+static HMODULE d3d12_module;
+
+static BOOL WINAPI load_d3d12_once(INIT_ONCE *once, void *param, void **context)
+{
+    d3d12_module = LoadLibraryW(L"d3d12.dll");
+    return TRUE;
+}
+
+static HRESULT load_d3d12(void)
+{
+    static INIT_ONCE init_once = INIT_ONCE_STATIC_INIT;
+
+    InitOnceExecuteOnce(&init_once, load_d3d12_once, NULL, NULL);
+
+    if (!d3d12_module)
+    {
+        ERR("Failed to load d3d12.dll\n");
+        return E_FAIL;
+    }
+
+    return S_OK;
+}
+
 static void check_intrinsic_support(ID3D12Device *device, BOOL *fp8, BOOL *p_wmma, ULONG *intrinsics)
 {
     ID3D12DeviceExt3 *ext;
@@ -645,8 +668,17 @@ struct AmdExtD3DCreateDevice
 
 HRESULT STDMETHODCALLTYPE AmdExtD3DCreateDevice_QueryInterface(IAmdExtD3DCreateDevice *iface, REFIID iid, void **out)
 {
-    FIXME("%p %s %p stub!\n", iface, debugstr_guid(iid), out);
-    return E_NOTIMPL;
+    TRACE("%p %s %p\n", iface, debugstr_guid(iid), out);
+
+    if (IsEqualGUID(iid, &IID_IUnknown) || IsEqualGUID(iid, &IID_IAmdExtD3DCreateDevice))
+    {
+        *out = iface;
+        iface->lpVtbl->AddRef(iface);
+        return S_OK;
+    }
+
+    *out = NULL;
+    return E_NOINTERFACE;
 }
 
 ULONG STDMETHODCALLTYPE AmdExtD3DCreateDevice_AddRef(IAmdExtD3DCreateDevice *iface)
@@ -663,15 +695,19 @@ HRESULT STDMETHODCALLTYPE AmdExtD3DCreateDevice_AmdD3D12CreateDevice(IAmdExtD3DC
                                                                      REFIID iid, void **device, AmdExtD3DCreateDeviceInfo *ext)
 {
     HRESULT ret;
-    HMODULE d3d12 = LoadLibraryW(L"d3d12.dll");
     static typeof(D3D12CreateDevice) *pD3D12CreateDevice;
 
     TRACE("%p %p %u %s %p %p\n", iface, adapter, minLevel, debugstr_guid(iid), device, ext);
 
-    if (!d3d12) return E_FAIL;
+    if ((ret = load_d3d12())) return ret;
 
-    pD3D12CreateDevice = (void *)GetProcAddress(d3d12, "D3D12CreateDevice");
-    if (!pD3D12CreateDevice) return E_FAIL;
+    if (!pD3D12CreateDevice)
+        pD3D12CreateDevice = (void *)GetProcAddress(d3d12_module, "D3D12CreateDevice");
+    if (!pD3D12CreateDevice)
+    {
+        ERR("Could not find D3D12CreateDevice.\n");
+        return E_FAIL;
+    }
 
     ret = pD3D12CreateDevice((IUnknown *)adapter, minLevel, iid, device);
 
@@ -695,7 +731,8 @@ HRESULT STDMETHODCALLTYPE AmdExtD3DCreateDevice_AmdD3D12CreateDevice(IAmdExtD3DC
         ext = (void *)ext->pNext;
     }
 
-    FreeLibrary(d3d12);
+    /* d3d12.dll stays loaded: the device just handed to the caller keeps using its code, and a
+     * caller-side release must not be able to unload it underneath */
     return ret;
 }
 
