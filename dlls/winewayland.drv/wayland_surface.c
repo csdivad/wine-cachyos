@@ -1216,9 +1216,12 @@ static void copy_rectangle_into_center_of_square(const unsigned int *src,
 static BOOL get_color_bitmap_bits(HDC hdc, HBITMAP bitmap, const BITMAP *bm,
                                   BITMAPINFO *info, unsigned int *bits)
 {
-    HBITMAP dib = 0, old_dst = 0, old_src = 0;
+    HBITMAP dib = 0, native_dib = 0, old_dst = 0, old_src = 0;
+    char buffer[FIELD_OFFSET(BITMAPINFO, bmiColors[256])];
+    BITMAPINFO *native_info = (BITMAPINFO *)buffer;
     HDC src_hdc = 0;
-    void *dib_bits = NULL;
+    void *dib_bits = NULL, *native_bits = NULL, *native_copy = NULL;
+    int i, native_stride, size;
     BOOL ret = FALSE;
 
     if (NtGdiGetDIBitsInternal(hdc, bitmap, 0, bm->bmHeight, bits, info,
@@ -1226,13 +1229,41 @@ static BOOL get_color_bitmap_bits(HDC hdc, HBITMAP bitmap, const BITMAP *bm,
         return TRUE;
 
     /* Windows rejects GetDIBits for DDBs whose native depth is neither 1 nor
-     * 32 bits. Render other DDB formats into a 32-bit DIB section instead of
-     * weakening that application-visible behavior. */
+     * 32 bits. Render other DDB formats through GDI into a 32-bit DIB section
+     * instead of weakening that application-visible behavior. A non-DIB bitmap
+     * can only be selected into a DC of its own depth, and a memory DC always
+     * reports the display depth, so the pixels are first copied out at their
+     * native depth and wrapped in a DIB section, which GDI then converts while
+     * blitting. Palette-carrying depths keep failing as before. */
+    if (bm->bmBitsPixel != 16 && bm->bmBitsPixel != 24) goto done;
+
+    size = bm->bmWidthBytes * bm->bmHeight;
+    if (!(native_copy = malloc(size))) goto done;
+    if (!NtGdiGetBitmapBits(bitmap, size, native_copy)) goto done;
+
+    memset(buffer, 0, sizeof(buffer));
+    native_info->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    native_info->bmiHeader.biWidth = bm->bmWidth;
+    native_info->bmiHeader.biHeight = -bm->bmHeight; /* GetBitmapBits returns top-down rows */
+    native_info->bmiHeader.biPlanes = 1;
+    native_info->bmiHeader.biBitCount = bm->bmBitsPixel;
+    native_info->bmiHeader.biCompression = BI_RGB;
+    native_info->bmiHeader.biSizeImage = size;
+
     if (!(src_hdc = NtGdiCreateCompatibleDC(0))) goto done;
+    if (!(native_dib = NtGdiCreateDIBSection(src_hdc, NULL, 0, native_info, DIB_RGB_COLORS,
+                                             0, 0, 0, &native_bits)))
+        goto done;
+
+    native_stride = ((bm->bmWidth * bm->bmBitsPixel + 31) / 32) * 4;
+    for (i = 0; i < bm->bmHeight; i++)
+        memcpy((char *)native_bits + i * native_stride, (char *)native_copy + i * bm->bmWidthBytes,
+               bm->bmWidthBytes);
+
+    if (!(old_src = NtGdiSelectBitmap(src_hdc, native_dib))) goto done;
     if (!(dib = NtGdiCreateDIBSection(hdc, NULL, 0, info, DIB_RGB_COLORS,
                                       0, 0, 0, &dib_bits)))
         goto done;
-    if (!(old_src = NtGdiSelectBitmap(src_hdc, bitmap))) goto done;
     if (!(old_dst = NtGdiSelectBitmap(hdc, dib))) goto done;
     if (!NtGdiBitBlt(hdc, 0, 0, bm->bmWidth, bm->bmHeight,
                      src_hdc, 0, 0, SRCCOPY, 0, 0))
@@ -1245,7 +1276,9 @@ done:
     if (old_dst) NtGdiSelectBitmap(hdc, old_dst);
     if (old_src) NtGdiSelectBitmap(src_hdc, old_src);
     if (dib) NtGdiDeleteObjectApp(dib);
+    if (native_dib) NtGdiDeleteObjectApp(native_dib);
     if (src_hdc) NtGdiDeleteObjectApp(src_hdc);
+    free(native_copy);
     if (!ret)
         ERR("Failed to convert %dx%d color bitmap, planes %u, bpp %u\n",
             bm->bmWidth, bm->bmHeight, (unsigned int)bm->bmPlanes,
