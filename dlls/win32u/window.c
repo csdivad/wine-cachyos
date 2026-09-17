@@ -2470,7 +2470,7 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
         if (!owner_hint)
         {
             owner_hint = NtUserWindowFromPoint(new_rects->window.left, new_rects->window.top - 1);
-            owner_hint = NtUserGetAncestor(owner_hint, GA_ROOT);
+            if (owner_hint) owner_hint = NtUserGetAncestor(owner_hint, GA_ROOT);
         }
 
         user_driver->pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, &monitor_rects,
