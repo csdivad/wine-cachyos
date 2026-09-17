@@ -1477,13 +1477,15 @@ static void wayland_client_surface_update(struct client_surface *client)
     TRACE("%s\n", debugstr_client_surface(client));
     if (toplevel) visible = is_client_visible(hwnd);
     if (!(data = wayland_win_data_get(hwnd))) return;
+    /* wayland_client_surface_attach() asks win32u for the client geometry (user_mutex), so
+     * win_data_mutex must not be held across it: win32u's surface path takes the two locks in the
+     * opposite order. This is only an existence check, so it can be dropped first. */
+    wayland_win_data_release(data);
 
     if (toplevel && visible)
         wayland_client_surface_attach(surface, toplevel);
     else
         wayland_client_surface_attach(surface, NULL);
-
-    wayland_win_data_release(data);
 }
 
 static void dummy_buffer_release(void *data, struct wl_buffer *buffer)
@@ -1612,21 +1614,28 @@ void set_client_surface(HWND hwnd, struct wayland_client_surface *new_client)
     if (toplevel) visible = is_client_visible(hwnd);
     if (!(data = wayland_win_data_get(hwnd))) return;
 
-    if (new_client != data->client_surface)
+    old_client = data->client_surface;
+    if (new_client != old_client)
     {
-        if ((old_client = data->client_surface))
-            wayland_client_surface_attach(old_client, NULL);
-
-        if ((data->client_surface = new_client))
-        {
-            if (toplevel && visible)
-                wayland_client_surface_attach(new_client, toplevel);
-            else
-                wayland_client_surface_attach(new_client, NULL);
-        }
+        /* The old client surface is only borrowed — the callers own the references, and the last
+         * release also destroys it — so detach it while win_data_mutex is held, or a concurrent
+         * release would free it before the attach below. This NULL attach only drops the subsurface
+         * and never calls into win32u, so it cannot invert the lock order. */
+        if (old_client) wayland_client_surface_attach(old_client, NULL);
+        data->client_surface = new_client;
     }
 
+    /* wayland_client_surface_attach() queries the client geometry through win32u (user_mutex), and
+     * win32u's surface path takes user_mutex before win_data_mutex, so the new surface must be
+     * attached with the window data released. */
     wayland_win_data_release(data);
+
+    if (new_client == old_client || !new_client) return;
+
+    if (toplevel && visible)
+        wayland_client_surface_attach(new_client, toplevel);
+    else
+        wayland_client_surface_attach(new_client, NULL);
 }
 
 static const struct client_surface_funcs wayland_client_surface_funcs =
@@ -1713,6 +1722,11 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
         return;
     }
 
+    /* Ask win32u for the client geometry before taking win_data_mutex: these calls take user_mutex
+     * through win32u, and win32u's surface path takes user_mutex before win_data_mutex. */
+    NtUserGetClientRect(hwnd, &client_rect, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
+    NtUserMapWindowPoints(hwnd, toplevel, (POINT *)&client_rect, 2, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
+
     if (!(toplevel_data = wayland_win_data_get(toplevel)) || !(surface = toplevel_data->wayland_surface))
     {
         if (toplevel_data) wayland_win_data_release(toplevel_data);
@@ -1736,9 +1750,6 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
 
         TRACE("Created subsurface for toplevel=%p\n", toplevel);
     }
-
-    NtUserGetClientRect(hwnd, &client_rect, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
-    NtUserMapWindowPoints(hwnd, toplevel, (POINT *)&client_rect, 2, NtUserGetWinMonitorDpi(hwnd, MDT_RAW_DPI));
 
     wayland_surface_reconfigure_client(surface, client, &client_rect);
     /* Commit to apply subsurface positioning. */
