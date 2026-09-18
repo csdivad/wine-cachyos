@@ -3468,6 +3468,11 @@ typedef struct _CTL_FIND_SUBJECT_PARA
 #define CRYPT_ACQUIRE_USE_PROV_INFO_FLAG 0x00000002
 #define CRYPT_ACQUIRE_COMPARE_KEY_FLAG   0x00000004
 #define CRYPT_ACQUIRE_SILENT_FLAG        0x00000040
+#define CRYPT_ACQUIRE_ALLOW_NCRYPT_KEY_FLAG 0x00010000
+#define CRYPT_ACQUIRE_PREFER_NCRYPT_KEY_FLAG 0x00020000
+#define CRYPT_ACQUIRE_ONLY_NCRYPT_KEY_FLAG 0x00040000
+#define CRYPT_ACQUIRE_NCRYPT_KEY_FLAGS_MASK 0x00070000
+#define CERT_NCRYPT_KEY_SPEC               0xFFFFFFFF
 
 /* flags for CryptFindCertificateKeyProvInfo */
 #define CRYPT_FIND_USER_KEYSET_FLAG    0x00000001
@@ -3499,7 +3504,8 @@ typedef struct _CERT_CHAIN_ENGINE_CONFIG
     DWORD       MaximumCachedCertificates;
     DWORD       CycleDetectionModulus;
     HCERTSTORE  hExclusiveRoot;
-    HCERTSTORE  hExclusiveRootTrustedPeople;
+    HCERTSTORE  hExclusiveTrustedPeople;
+    DWORD       dwExclusiveFlags;
 } CERT_CHAIN_ENGINE_CONFIG, *PCERT_CHAIN_ENGINE_CONFIG;
 
 /* message-related definitions */

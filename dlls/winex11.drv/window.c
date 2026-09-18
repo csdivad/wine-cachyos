@@ -1250,6 +1250,10 @@ static void set_initial_wm_hints( Display *display, Window window )
         const char *app_id = getenv("SteamAppId");
         char proton_app_class[128];
 
+        if(!app_id || !*app_id) {
+            app_id = getenv("WINE_WMCLASS");
+        }
+
         if(app_id && *app_id){
             snprintf(proton_app_class, sizeof(proton_app_class), "steam_app_%s", app_id);
             class_hints->res_name = proton_app_class;
@@ -4224,6 +4228,7 @@ void net_supporting_wm_check_init( struct x11drv_thread_data *data )
         char const *sgi = getenv( "SteamGameId" );
 
         if (!strcmp( data->window_manager, "GNOME Shell" )) strcpy( data->window_manager, "Mutter" );
+        if (!strcmp( data->window_manager, "Mutter (Muffin)" )) strcpy( data->window_manager, "Mutter" );
         TRACE( "Detected window manager: %s\n", debugstr_a(data->window_manager) );
 
         /* Street Fighter V expects a certain sequence of window resizes

@@ -3610,7 +3610,8 @@ const NLS_LOCALE_DATA *get_locale_data( LCID lcid )
         else if (lcid > lcids_index[pos].id) min = pos + 1;
         else
         {
-            ULONG offset = locale_table->locales_offset + pos * locale_table->locale_size;
+            const NLS_LOCALE_LCID_INDEX *entry = &lcids_index[pos];
+            ULONG offset = locale_table->locales_offset + entry->idx * locale_table->locale_size;
             return (const NLS_LOCALE_DATA *)((const char *)locale_table + offset);
         }
     }
@@ -4552,6 +4553,8 @@ static HFONT font_SelectFont( PHYSDEV dev, HFONT hfont, UINT *aa_flags )
         LOGFONTW lf;
         FMAT2 dcmat;
         BOOL can_use_bitmap = !!(NtGdiGetDeviceCaps( dc->hSelf, TEXTCAPS ) & TC_RA_ABLE);
+        UINT new_font_smoothing, new_subpixel_orientation;
+        BOOL update_font_smoothing;
 
         NtGdiExtGetObjectW( hfont, sizeof(lf), &lf );
         switch (lf.lfQuality)
@@ -4601,17 +4604,28 @@ static HFONT font_SelectFont( PHYSDEV dev, HFONT hfont, UINT *aa_flags )
         }
         TRACE( "DC transform %f %f %f %f\n", dcmat.eM11, dcmat.eM12, dcmat.eM21, dcmat.eM22 );
 
+        update_font_smoothing = get_font_smoothing_aa( &new_font_smoothing,
+                                                       &new_subpixel_orientation );
+
         pthread_mutex_lock( &font_lock );
+        if (update_font_smoothing)
+        {
+            font_smoothing = new_font_smoothing;
+            subpixel_orientation = new_subpixel_orientation;
+        }
 
         font = select_font( &lf, dcmat, can_use_bitmap );
 
         if (font)
         {
-            if (!*aa_flags) *aa_flags = font->aa_flags;
             if (!*aa_flags)
             {
                 if (lf.lfQuality == CLEARTYPE_QUALITY || lf.lfQuality == CLEARTYPE_NATURAL_QUALITY)
                     *aa_flags = subpixel_orientation;
+                else if (font_smoothing == GGO_BITMAP)
+                    *aa_flags = GGO_BITMAP;
+                else if (font->aa_flags)
+                    *aa_flags = font->aa_flags;
                 else
                     *aa_flags = font_smoothing;
             }

@@ -455,8 +455,6 @@ static HRESULT source_reader_queue_response(struct source_reader *reader, struct
 
     source_reader_response_ready(reader, response);
 
-    stream->last_sample_ts = timestamp;
-
     return S_OK;
 }
 
@@ -695,6 +693,8 @@ static void media_type_try_copy_attr(IMFMediaType *dst, IMFMediaType *src, const
 /* also present in mf/topology_loader.c pipeline */
 static HRESULT update_media_type_from_upstream(IMFMediaType *media_type, IMFMediaType *upstream_type, BOOL advanced)
 {
+    UINT32 bits_per_sample, channels, samples_per_second;
+    GUID subtype;
     HRESULT hr = S_OK;
 
     /* propagate common video attributes */
@@ -726,6 +726,21 @@ static HRESULT update_media_type_from_upstream(IMFMediaType *media_type, IMFMedi
     media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_CHANNEL_MASK, &hr);
     media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_BLOCK, &hr);
     media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_VALID_BITS_PER_SAMPLE, &hr);
+
+    /* block alignment and byte rate may be inherited from the compressed upstream type;
+     * for pcm / float recompute them from the decoded format instead */
+    if (SUCCEEDED(hr) && SUCCEEDED(IMFMediaType_GetGUID(media_type, &MF_MT_SUBTYPE, &subtype))
+            && (IsEqualGUID(&subtype, &MFAudioFormat_PCM) || IsEqualGUID(&subtype, &MFAudioFormat_Float))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_NUM_CHANNELS, &channels))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &samples_per_second)))
+    {
+        UINT32 block_alignment = bits_per_sample * channels / 8;
+
+        hr = IMFMediaType_SetUINT32(media_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, block_alignment);
+        if (SUCCEEDED(hr))
+            hr = IMFMediaType_SetUINT32(media_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, block_alignment * samples_per_second);
+    }
 
     return hr;
 }
@@ -1312,6 +1327,7 @@ static BOOL source_reader_get_read_result(struct source_reader *reader, struct m
         if (*sample)
         {
             IMFSample_AddRef(*sample);
+            stream->last_sample_ts = response->timestamp;
             if (stream->state == STREAM_STATE_EOS && (ptr = list_head(&stream->transforms)))
             {
                 struct transform_entry *entry = LIST_ENTRY(ptr, struct transform_entry, entry);
@@ -1346,9 +1362,9 @@ static BOOL source_reader_get_read_result(struct source_reader *reader, struct m
 
 static HRESULT source_reader_get_next_selected_stream(struct source_reader *reader, DWORD *stream_index)
 {
-    unsigned int i, first_selected = ~0u;
+    unsigned int i, first_selected = ~0u, ready_index = ~0u;
     BOOL selected, stream_drained;
-    LONGLONG min_ts = MAXLONGLONG;
+    LONGLONG min_ts = MAXLONGLONG, min_ts_ready = MAXLONGLONG;
 
     for (i = 0; i < reader->stream_count; ++i)
     {
@@ -1360,17 +1376,28 @@ static HRESULT source_reader_get_next_selected_stream(struct source_reader *read
             if (first_selected == ~0u)
                 first_selected = i;
 
-            /* Pick the stream whose last sample had the lowest timestamp. */
-            if (!stream_drained && reader->streams[i].last_sample_ts < min_ts)
+            if (!stream_drained)
             {
-                min_ts = reader->streams[i].last_sample_ts;
-                *stream_index = i;
+                /* use least advanced stream if no responses are ready */
+                if (reader->streams[i].last_sample_ts < min_ts)
+                {
+                    min_ts = reader->streams[i].last_sample_ts;
+                    *stream_index = i;
+                }
+                /* between streams that have queued responses, use the one with the lowest delivered timestamp */
+                if (reader->streams[i].responses && reader->streams[i].last_sample_ts < min_ts_ready)
+                {
+                    min_ts_ready = reader->streams[i].last_sample_ts;
+                    ready_index = i;
+                }
             }
         }
     }
 
-    /* If all selected streams reached EOS, use first selected. */
-    if (first_selected != ~0u && min_ts == MAXLONGLONG)
+    /* prefer a stream with queued responses, else use the least advanced stream */
+    if (ready_index != ~0u)
+        *stream_index = ready_index;
+    else if (first_selected != ~0u && min_ts == MAXLONGLONG)
     {
         if (reader->flag_eos_for_all_streams)
             *stream_index = reader->next_stream_eos_index++ % reader->stream_count;
