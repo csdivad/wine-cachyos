@@ -4141,14 +4141,13 @@ static HRESULT SWbemObjectPath_create( IWbemClassObject *object, ISWbemObjectPat
 
     TRACE( "%p\n", obj );
 
-    VariantInit( &var );
-
     if (!(objectpath = calloc( 1, sizeof(*objectpath) ))) return E_OUTOFMEMORY;
     objectpath->ISWbemObjectPath_iface.lpVtbl = &objectpath_vtbl;
     objectpath->refs = 1;
 
     if (FAILED( hr = CoCreateInstance( &CLSID_WbemDefPath, NULL, CLSCTX_INPROC_SERVER, &IID_IWbemPath,
             (void **)&objectpath->path ) )) goto error;
+    VariantInit( &var );
     if (FAILED( hr = IWbemClassObject_Get( object, L"__PATH", 0, &var, NULL, NULL ) )) goto error;
     if (FAILED( hr = IWbemPath_SetText( objectpath->path, WBEMPATH_CREATE_ACCEPT_ALL, V_BSTR( &var ) ))) goto error;
     VariantClear( &var );

@@ -279,10 +279,7 @@ static ULONG WINAPI memory_stream_random_access_Release( IRandomAccessStream *if
     TRACE( "iface %p, ref %lu.\n", iface, ref );
 
     if (!ref)
-    {
         free( impl->buffer );
-        free( impl );
-    }
 
     return ref;
 }

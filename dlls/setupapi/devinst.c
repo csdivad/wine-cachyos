@@ -704,7 +704,6 @@ static void SETUPDI_UpdateDeviceContainersW(struct device *device, const BYTE *b
     if (!buffer_size || !lstrcmpW((LPCWSTR)buffer, GUID_NULL_STR))
         return;
     container_str_size = buffer_size < sizeof(container_str) ? buffer_size : sizeof(container_str);
-    if (container_str_size < sizeof(WCHAR)) return;
     memcpy(container_str, buffer, container_str_size);
     container_str[container_str_size / sizeof(WCHAR) - 1] = 0;
     _wcslwr(container_str);

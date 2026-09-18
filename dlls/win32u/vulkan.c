@@ -4843,8 +4843,8 @@ static VkResult win32u_vkImportSemaphoreWin32HandleKHR( VkDevice client_device, 
     TRACE( "fence_info type %d, pid %04x.\n", fence_info.type, fence_info.pid );
     if (fence_info.type && fence_info.pid != GetCurrentProcessId())
     {
-        FIXME( "d3d12 fence from other process, unsupported.\n" );
-        res = VK_ERROR_INVALID_EXTERNAL_HANDLE;
+        FIXME( "d3d12 fence from other process.\n" );
+        memset( &semaphore->info, 0, sizeof(semaphore->info) );
     }
 
     if ((fd_info.fd = d3dkmt_object_get_fd( local )) < 0) res = VK_ERROR_INVALID_EXTERNAL_HANDLE;

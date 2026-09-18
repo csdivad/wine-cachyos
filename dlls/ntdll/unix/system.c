@@ -1888,14 +1888,8 @@ static void init_logical_proc_info(void)
         {
             if (p->Relationship == RelationNumaNode || p->Relationship == RelationNumaNodeEx)
             {
-                if (p->NumaNode.NodeNumber < MAXIMUM_NUMA_NODE_COUNT)
-                {
-                    numa_info.ActiveProcessorsGroupAffinity[p->NumaNode.NodeNumber] = p->NumaNode.GroupMask;
-                    ++numa_node_count;
-                }
-                else
-                    WARN( "Ignoring NUMA node %u, only up to %u are supported.\n",
-                          p->NumaNode.NodeNumber, MAXIMUM_NUMA_NODE_COUNT );
+                numa_info.ActiveProcessorsGroupAffinity[p->NumaNode.NodeNumber] = p->NumaNode.GroupMask;
+                ++numa_node_count;
             }
             p = (SYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX *)((char *)p + p->Size);
         }
