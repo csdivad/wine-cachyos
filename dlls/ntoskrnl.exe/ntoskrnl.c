@@ -3215,7 +3215,7 @@ HANDLE WINAPI PsGetCurrentProcessId(void)
  */
 ULONG WINAPI PsGetCurrentProcessSessionId(void)
 {
-    return PsGetCurrentProcess()->info.PebBaseAddress->SessionId;
+    return PsGetCurrentProcess()->session_id;
 }
 
 /***********************************************************************
@@ -4655,6 +4655,12 @@ void WINAPI KfRaiseIrql(KIRQL new, KIRQL *old)
 void WINAPI KeLowerIrql(KIRQL new)
 {
     FIXME("new %u: stub.\n", new);
+}
+
+KIRQL WINAPI KeGetCurrentIrql(void)
+{
+    FIXME("stub!\n");
+    return 0;
 }
 
 #endif

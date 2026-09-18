@@ -537,7 +537,7 @@ static unsigned long get_mwm_decorations_for_style( DWORD style, DWORD ex_style 
     if (X11DRV_HasWindowManager( "Mutter" )) return 0;
 
     if (ex_style & WS_EX_TOOLWINDOW) return 0;
-    if (ex_style & WS_EX_LAYERED) return 0;
+    if ((ex_style & (WS_EX_LAYERED | WS_EX_COMPOSITED)) == WS_EX_LAYERED) return 0;
 
     if ((style & WS_CAPTION) == WS_CAPTION)
     {
@@ -1789,6 +1789,16 @@ static void window_set_wm_state( struct x11drv_win_data *data, UINT new_state, B
 {
     UINT old_state = data->pending_state.wm_state;
     HWND foreground = NtUserGetForegroundWindow();
+
+    /* These compositors may stack Forza's black backing window above the game
+     * despite _NET_WM_STATE_BELOW. Keep it unmapped, including on state replay
+     * and focus changes, without hiding its Win32 window from the game. */
+    if (data->force_below_hack && (X11DRV_HasWindowManager( "steamcompmgr" ) ||
+                                 X11DRV_HasWindowManager( "wlroots wm" )))
+    {
+        new_state = WithdrawnState;
+        activate = FALSE;
+    }
 
     data->desired_state.wm_state = new_state;
     data->desired_state.activate = activate;
@@ -3709,7 +3719,7 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
 
     /* layered windows are mapped only once their attributes are set */
     if (data->pending_state.wm_state == WithdrawnState && (new_style & WS_VISIBLE) &&
-        (ex_style & WS_EX_LAYERED) && !data->layered && !IsRectEmpty( &new_rects->window ))
+        (ex_style & (WS_EX_LAYERED | WS_EX_COMPOSITED)) == WS_EX_LAYERED && !data->layered && !IsRectEmpty( &new_rects->window ))
     {
         WARN( "win %p/%lx is layered, delaying mapping\n", hwnd, data->whole_window );
         new_style &= ~WS_VISIBLE;
@@ -3719,11 +3729,16 @@ void X11DRV_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint, UIN
 
     if (use_force_below_hack())
     {
-        if (insert_after != HWND_BOTTOM && insert_after != HWND_NOTOPMOST && insert_after != HWND_TOP && insert_after != HWND_TOPMOST)
+        /* Login dialogs also use explicit Z order. Only the disabled fullscreen
+         * tool popup is a backing window; retain its flag across focus changes. */
+        if ((new_style & (WS_POPUP | WS_DISABLED | WS_CHILD)) != (WS_POPUP | WS_DISABLED) ||
+            (ex_style & (WS_EX_TOOLWINDOW | WS_EX_APPWINDOW)) != WS_EX_TOOLWINDOW)
+            data->force_below_hack = 0;
+        else if (fullscreen && insert_after != HWND_BOTTOM && insert_after != HWND_NOTOPMOST &&
+                 insert_after != HWND_TOP && insert_after != HWND_TOPMOST)
         {
             WARN( "%p/%#lx setting force_below_hack.\n", hwnd, data->whole_window );
             data->force_below_hack = 1;
-            if (X11DRV_HasWindowManager( "steamcompmgr" )) new_style &= ~WS_VISIBLE;
         }
     }
 

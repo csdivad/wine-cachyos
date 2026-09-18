@@ -318,6 +318,21 @@ typedef struct ADLAdapterODClockInfo
     ADLODClockSetting sEngineClock;
 } ADLAdapterODClockInfo;
 
+typedef struct ADLFreeSyncCap
+{
+    /// FreeSync capability flags. \ref define_freesync_caps
+    int iCaps;
+    /// Reports minimum FreeSync refresh rate supported by the display in micro hertz
+    int iMinRefreshRateInMicroHz;
+    /// Reports maximum FreeSync refresh rate supported by the display in micro hertz
+    int iMaxRefreshRateInMicroHz;
+    /// Index of FreeSync Label to use:  ADL_FREESYNC_LABEL_*
+    unsigned char ucLabelIndex;
+    /// Reserved
+    char cReserved[3];
+    int iReserved[4];
+} ADLFreeSyncCap;
+
 typedef unsigned int ADL_D3DKMT_HANDLE;
 
 static const ADLVersionsInfo version = {
@@ -700,6 +715,13 @@ int CDECL ADL2_Adapter_NumberOfAdapters_Get(ADL_CONTEXT_HANDLE ctx, int *count)
     return ADL_OK;
 }
 
+int CDECL ADL2_Graphics_VersionsX3_Get(ADL_CONTEXT_HANDLE ptr, int adapter_index, ADLVersionsInfoX2 *ver)
+{
+    FIXME("ptr %p, index %d, ver %p semi-stub.\n", ptr, adapter_index, ver);
+    memcpy(ver, &version2, sizeof(version2));
+    return ADL_OK;
+}
+
 int CDECL ADL2_Graphics_VersionsX2_Get(ADL_CONTEXT_HANDLE ptr, ADLVersionsInfoX2 *ver)
 {
     TRACE("ptr %p, ver %p.\n", ptr, ver);
@@ -748,6 +770,9 @@ static int adapter_info_get(ADL_CONTEXT_HANDLE ctx, ADLAdapterInfo *adapters, in
         adapters[i].iSize = sizeof(ADLAdapterInfo);
         adapters[i].iAdapterIndex = i;
         adapters[i].iOSDisplayIndex = i;
+        adapters[i].iBusNumber = 0;
+        adapters[i].iFunctionNumber = 0;
+        adapters[i].iDeviceNumber = 0;
 
         strcpy(buffer, ctx->adapters[i].gpu->device_path + 4);
         if ((p = strrchr(buffer, '#'))) *p = 0;
@@ -792,6 +817,12 @@ int CDECL ADL2_Adapter_AdapterInfoX2_Get(ADL_CONTEXT_HANDLE ctx, ADLAdapterInfo 
 
     *info = ctx->malloc( ctx->adapter_count * sizeof(**info) );
     return adapter_info_get(ctx, *info, ctx->adapter_count * sizeof(**info));
+}
+
+int CDECL ADL_Adapter_AdapterInfoX2_Get(ADLAdapterInfo **info)
+{
+    TRACE("info %p.\n", info);
+    return ADL2_Adapter_AdapterInfoX2_Get(default_ctx, info);
 }
 
 int CDECL ADL2_Adapter_Active_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int *status)
@@ -908,6 +939,16 @@ int CDECL ADL_Adapter_Crossfire_Get(int adapter_index, ADLCrossfireComb *comb, A
 {
     FIXME("adapter %d, comb %p, info %p, stub!\n", adapter_index, comb, info);
     return ADL_ERR;
+}
+
+int CDECL ADL2_Adapter_Primary_Get(ADL_CONTEXT_HANDLE ctx, int *idx)
+{
+    FIXME("%p %p stub!\n", ctx, idx);
+
+    if (!ctx || !idx) return ADL_ERR_INVALID_PARAM;
+
+    *idx = 0;
+    return ADL_OK;
 }
 
 int CDECL ADL2_Adapter_ASICFamilyType_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int *asic_type, int *valids)
@@ -1128,6 +1169,34 @@ int CDECL ADL_Display_DisplayMapConfig_Get(int adapter_index, int *display_map_c
 
     return ADL2_Display_DisplayMapConfig_Get(default_ctx, adapter_index, display_map_count, display_maps,
             display_target_count, display_targets, options);
+}
+
+int CDECL ADL2_Display_Modes_Get(ADL_CONTEXT_HANDLE ctx, int adapter_index, int display_index,
+                                 int *num_modes, ADLMode **modes)
+{
+    TRACE("ctx %p adapter_index %d display_index %d num_modes %p modes %p", ctx,
+          adapter_index, display_index, num_modes, modes);
+
+    /* FIXME: */
+
+    return ADL_ERR;
+}
+
+int CDECL ADL_Display_Modes_Get(int adapter_index, int display_index, int *num_modes, ADLMode **modes)
+{
+    return ADL2_Display_Modes_Get(default_ctx, adapter_index, display_index, num_modes, modes);
+}
+
+int CDECL ADL2_Display_FreeSync_Cap(ADL_CONTEXT_HANDLE ctx, int adapter_index, int display_index, ADLFreeSyncCap *caps)
+{
+    FIXME("ctx %p adapter_index %d display_index %d caps %p stub!\n", ctx, adapter_index, display_index, caps);
+
+    return ADL_ERR;
+}
+
+int CDECL ADL_Display_FreeSync_Cap(int adapter_index, int display_index, ADLFreeSyncCap *caps)
+{
+    return ADL2_Display_FreeSync_Cap(default_ctx, adapter_index, display_index, caps);
 }
 
 int CDECL ADL_Display_MVPUStatus_Get(int adapter_index, ADLMVPUStatus *mvpu_status)

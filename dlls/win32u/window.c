@@ -274,32 +274,38 @@ void *free_user_handle( HANDLE handle, unsigned short type )
 static pthread_mutex_t surfaces_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct list client_surfaces = LIST_INIT( client_surfaces );
 
+static void client_surface_detach_locked( struct client_surface *surface )
+{
+    if (!surface->hwnd) return;
+
+    list_remove( &surface->entry );
+    surface->funcs->detach( surface );
+    surface->hwnd = NULL;
+}
+
+static void client_surface_release_locked( struct client_surface *surface )
+{
+    ULONG ref = InterlockedDecrement( &surface->ref );
+    TRACE( "%s decreasing refcount to %u\n", debugstr_client_surface( surface ), ref );
+
+    if (!ref)
+    {
+        client_surface_detach_locked( surface );
+        surface->funcs->destroy( surface );
+        free( surface );
+    }
+}
+
 void detach_client_surfaces( HWND hwnd )
 {
-    struct list detached = LIST_INIT( detached );
     struct client_surface *surface, *next;
 
     pthread_mutex_lock( &surfaces_lock );
 
     LIST_FOR_EACH_ENTRY_SAFE( surface, next, &client_surfaces, struct client_surface, entry )
-    {
-        if (surface->hwnd != hwnd) continue;
-
-        list_remove( &surface->entry );
-        list_add_tail( &detached, &surface->entry );
-        client_surface_add_ref( surface );
-
-        surface->funcs->detach( surface );
-        surface->hwnd = NULL;
-    }
+        if (surface->hwnd == hwnd) client_surface_detach_locked( surface );
 
     pthread_mutex_unlock( &surfaces_lock );
-
-    LIST_FOR_EACH_ENTRY_SAFE( surface, next, &detached, struct client_surface, entry )
-    {
-        list_remove( &surface->entry );
-        client_surface_release( surface );
-    }
 }
 
 static void update_client_surfaces( HWND hwnd )
@@ -340,22 +346,9 @@ void client_surface_add_ref( struct client_surface *surface )
 
 void client_surface_release( struct client_surface *surface )
 {
-    ULONG ref = InterlockedDecrement( &surface->ref );
-    TRACE( "%s decreasing refcount to %u\n", debugstr_client_surface( surface ), ref );
-
-    if (!ref)
-    {
-        pthread_mutex_lock( &surfaces_lock );
-        if (surface->hwnd)
-        {
-            surface->funcs->detach( surface );
-            list_remove( &surface->entry );
-        }
-        pthread_mutex_unlock( &surfaces_lock );
-
-        surface->funcs->destroy( surface );
-        free( surface );
-    }
+    pthread_mutex_lock( &surfaces_lock );
+    client_surface_release_locked( surface );
+    pthread_mutex_unlock( &surfaces_lock );
 }
 
 void client_surface_present( struct client_surface *surface )
@@ -2040,6 +2033,10 @@ static RECT get_visible_rect( HWND hwnd, BOOL shaped, UINT style, UINT ex_style,
     if (visible_rect.top >= visible_rect.bottom) visible_rect.bottom = visible_rect.top + 1;
     if (visible_rect.left >= visible_rect.right) visible_rect.right = visible_rect.left + 1;
 
+    /* fall back to the window rect if the client rect extends beyond the visible rect */
+    if (visible_rect.top > rects->client.top || visible_rect.bottom < rects->client.bottom) return rects->window;
+    if (visible_rect.left > rects->client.left || visible_rect.right < rects->client.right) return rects->window;
+
     TRACE( "hwnd %p, rects %s, style %#x, ex_style %#x -> visible_rect %s\n", hwnd,
            debugstr_window_rects( rects ), style, ex_style, wine_dbgstr_rect( &visible_rect ) );
     return visible_rect;
@@ -2397,8 +2394,14 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
 
         owner_hint = NtUserGetWindowRelative(hwnd, GW_OWNER);
         /* fallback to any window that is right below our top left corner */
-        if (!owner_hint) owner_hint = NtUserWindowFromPoint(new_rects->window.left - 1, new_rects->window.top - 1);
+        if (!owner_hint) owner_hint = NtUserWindowFromPoint(new_rects->window.left - 1, new_rects->window.top);
         if (owner_hint) owner_hint = NtUserGetAncestor(owner_hint, GA_ROOT);
+        /* GA_ROOT of desktop window is null */
+        if (!owner_hint)
+        {
+            owner_hint = NtUserWindowFromPoint(new_rects->window.left, new_rects->window.top - 1);
+            owner_hint = NtUserGetAncestor(owner_hint, GA_ROOT);
+        }
 
         user_driver->pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, &monitor_rects,
                                         get_driver_window_surface( new_surface, raw_dpi ) );

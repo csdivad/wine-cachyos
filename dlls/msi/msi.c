@@ -1803,6 +1803,9 @@ UINT WINAPI MsiGetPatchInfoA( LPCSTR patch, LPCSTR attr, LPSTR buffer, LPDWORD b
     if (!patch || !attr)
         return ERROR_INVALID_PARAMETER;
 
+    if (buffer && !buflen)
+        return ERROR_INVALID_PARAMETER;
+
     if (!(patchW = strdupAtoW( patch )))
         goto done;
 
@@ -1849,6 +1852,9 @@ UINT WINAPI MsiGetPatchInfoW( LPCWSTR patch, LPCWSTR attr, LPWSTR buffer, LPDWOR
     TRACE("%s %s %p %p\n", debugstr_w(patch), debugstr_w(attr), buffer, buflen);
 
     if (!patch || !attr)
+        return ERROR_INVALID_PARAMETER;
+
+    if (buffer && !buflen)
         return ERROR_INVALID_PARAMETER;
 
     if (wcscmp( INSTALLPROPERTY_LOCALPACKAGEW, attr ))
@@ -3568,7 +3574,7 @@ static USERINFOSTATE MSI_GetUserInfo(LPCWSTR szProduct,
     {
         if (lpUserNameBuf && !user)
         {
-            (*pcchUserNameBuf)--;
+            if (*pcchUserNameBuf) (*pcchUserNameBuf)--;
             goto done;
         }
 
@@ -3597,7 +3603,7 @@ static USERINFOSTATE MSI_GetUserInfo(LPCWSTR szProduct,
     {
         if (!serial)
         {
-            (*pcchSerialBuf)--;
+            if (*pcchSerialBuf) (*pcchSerialBuf)--;
             goto done;
         }
 

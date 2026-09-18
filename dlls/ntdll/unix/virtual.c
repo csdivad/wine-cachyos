@@ -574,7 +574,7 @@ static void mmap_add_reserved_area( void *addr, SIZE_T size )
     assert( !((UINT_PTR)addr & host_page_mask) );
     assert( !(size & host_page_mask) );
 
-    if (!((intptr_t)addr + size)) size--;  /* avoid wrap-around */
+    if (!((intptr_t)addr + size)) size -= host_page_size;  /* avoid wrap-around */
     end = (char *)addr + size;
 
     LIST_FOR_EACH( ptr, &reserved_areas )
@@ -626,7 +626,7 @@ static void mmap_remove_reserved_area( void *addr, SIZE_T size )
     assert( !((UINT_PTR)addr & host_page_mask) );
     assert( !(size & host_page_mask) );
 
-    if (!((intptr_t)addr + size)) size--;  /* avoid wrap-around */
+    if (!((intptr_t)addr + size)) size -= host_page_size;  /* avoid wrap-around */
 
     ptr = list_head( &reserved_areas );
     /* find the first area covering address */
@@ -686,9 +686,10 @@ static int mmap_is_in_reserved_area( void *addr, SIZE_T size )
 
     LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
     {
-        if (area->base > addr) break;
+        if ((char *)area->base > (char *)addr + size) break;
         if ((char *)area->base + area->size <= (char *)addr) continue;
         /* area must contain block completely */
+        if (area->base > addr) return -1;
         if ((char *)area->base + area->size < (char *)addr + size) return -1;
         return 1;
     }
@@ -5646,10 +5647,6 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
         case MemExtendedParameterAddressRequirements:
         {
             MEM_ADDRESS_REQUIREMENTS *r = parameters[i].Pointer;
-            ULONG_PTR limit;
-
-            if (is_wow64()) limit = get_wow_user_space_limit();
-            else limit = (ULONG_PTR)user_space_limit;
 
             if (r->Alignment)
             {
@@ -5663,7 +5660,7 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
             if (r->LowestStartingAddress)
             {
                 *limit_low = (ULONG_PTR)r->LowestStartingAddress;
-                if (*limit_low >= limit || (*limit_low & granularity_mask))
+                if (*limit_low >= (ULONG_PTR)user_space_limit || (*limit_low & granularity_mask))
                 {
                     WARN( "Invalid limit %p.\n", r->LowestStartingAddress );
                     return STATUS_INVALID_PARAMETER;
@@ -5672,7 +5669,7 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
             if (r->HighestEndingAddress)
             {
                 *limit_high = (ULONG_PTR)r->HighestEndingAddress;
-                if (*limit_high > limit ||
+                if (*limit_high > (ULONG_PTR)user_space_limit ||
                     *limit_high <= *limit_low ||
                     ((*limit_high + 1) & (page_mask - 1)))
                 {
@@ -6130,8 +6127,11 @@ static unsigned int get_basic_memory_info( HANDLE process, LPCVOID addr,
             info->AllocationProtect = result.virtual_query.alloc_prot;
             info->State             = (DWORD)result.virtual_query.state << 12;
             info->Type              = (DWORD)result.virtual_query.alloc_type << 16;
-            if (info->RegionSize != result.virtual_query.size)  /* truncated */
-                return STATUS_INVALID_PARAMETER;  /* FIXME */
+#ifndef _WIN64
+            if (result.virtual_query.base >= ~granularity_mask) return STATUS_INVALID_PARAMETER;
+            if ((result.virtual_query.base + result.virtual_query.size) >> 32)  /* overflow */
+                info->RegionSize = ~granularity_mask - result.virtual_query.base;
+#endif
             if (res_len) *res_len = sizeof(*info);
         }
         return result.virtual_query.status;

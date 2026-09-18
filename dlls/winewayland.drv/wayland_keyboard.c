@@ -185,7 +185,7 @@ static WORD key2scan(UINT key)
     case KEY_F24: return 0x0076; /* T76 / VK_F24 */
     case KEY_KPPLUSMINUS: return 0x007b; /* T7B / VK_OEM_PA1 */
     /* FIXME: map a KEY to T7C / VK_TAB */
-    /* FIXME: map a KEY to T7E / VK_ABNT_C2 */
+    case KEY_KPCOMMA: return 0x007E; /* T7E / VK_ABNT_C2 */
     /* FIXME: map a KEY to T7F / VK_OEM_PA2 */
     case KEY_PREVIOUSSONG: return 0x0110; /* X10 / VK_MEDIA_PREV_TRACK */
     case KEY_NEXTSONG: return 0x0119; /* X19 / VK_MEDIA_NEXT_TRACK */
@@ -248,7 +248,7 @@ static inline LANGID langid_from_xkb_layout(const char *layout, size_t layout_le
         [MAKEINDEX('b','d')] = MAKELANGID(LANG_BANGLA, SUBLANG_DEFAULT),
         [MAKEINDEX('b','e')] = MAKELANGID(LANG_FRENCH, SUBLANG_FRENCH_BELGIAN),
         [MAKEINDEX('b','g')] = MAKELANGID(LANG_BULGARIAN, SUBLANG_DEFAULT),
-        [MAKEINDEX('b','r')] = MAKELANGID(LANG_PORTUGUESE, 2),
+        [MAKEINDEX('b','r')] = MAKELANGID(LANG_PORTUGUESE, SUBLANG_PORTUGUESE_BRAZILIAN),
         [MAKEINDEX('b','t')] = MAKELANGID(LANG_TIBETAN, 3),
         [MAKEINDEX('b','w')] = MAKELANGID(LANG_TSWANA, SUBLANG_TSWANA_BOTSWANA),
         [MAKEINDEX('b','y')] = MAKELANGID(LANG_BELARUSIAN, SUBLANG_DEFAULT),
@@ -309,7 +309,7 @@ static inline LANGID langid_from_xkb_layout(const char *layout, size_t layout_le
         [MAKEINDEX('p','h')] = MAKELANGID(LANG_FILIPINO, SUBLANG_DEFAULT),
         [MAKEINDEX('p','k')] = MAKELANGID(LANG_URDU, SUBLANG_DEFAULT),
         [MAKEINDEX('p','l')] = MAKELANGID(LANG_POLISH, SUBLANG_DEFAULT),
-        [MAKEINDEX('p','t')] = MAKELANGID(LANG_PORTUGUESE, SUBLANG_DEFAULT),
+        [MAKEINDEX('p','t')] = MAKELANGID(LANG_PORTUGUESE, SUBLANG_PORTUGUESE),
         [MAKEINDEX('r','o')] = MAKELANGID(LANG_ROMANIAN, SUBLANG_DEFAULT),
         [MAKEINDEX('r','s')] = MAKELANGID(LANG_SERBIAN, SUBLANG_SERBIAN_LATIN),
         [MAKEINDEX('r','u')] = MAKELANGID(LANG_RUSSIAN, SUBLANG_DEFAULT),
@@ -502,6 +502,8 @@ static void add_xkb_layout(const char *xkb_layout, struct xkb_keymap *xkb_keymap
         BOOL found = FALSE, caps_found = FALSE;
         uint32_t caps_ret, shift_ret;
         unsigned int mod;
+
+        if (!vkey) continue;
 
         if ((vkey & KBDNUMPAD) && (vkey & 0xff) == VK_DELETE)
         {

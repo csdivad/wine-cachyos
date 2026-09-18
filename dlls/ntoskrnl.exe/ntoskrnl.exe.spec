@@ -493,7 +493,7 @@
 @ stdcall IoStopTimer(ptr)
 @ stub IoSynchronousInvalidateDeviceRelations
 @ stub IoSynchronousPageWrite
-@ stub IoThreadToProcess
+@ stdcall IoThreadToProcess(ptr) PsGetThreadProcess
 @ stdcall IoUnregisterFileSystem(ptr)
 @ stub IoUnregisterFsRegistrationChange
 @ stdcall IoUnregisterPlugPlayNotification(ptr)
@@ -563,6 +563,7 @@
 @ stdcall KeGetCurrentProcessorNumber() NtGetCurrentProcessorNumber
 @ stdcall KeGetCurrentProcessorNumberEx(ptr)
 @ stdcall KeGetCurrentThread()
+@ stdcall -arch=x86_64 KeGetCurrentIrql()
 @ stub KeGetPreviousMode
 @ stub KeGetRecommendedSharedDataAlignment
 @ stub KeI386AbiosCall
@@ -902,7 +903,7 @@
 @ stub PsCreateSystemProcess
 @ stdcall PsCreateSystemThread(ptr long ptr long ptr ptr ptr)
 @ stub PsDereferenceImpersonationToken
-@ stub PsDereferencePrimaryToken
+@ stdcall PsDereferencePrimaryToken(ptr) ObDereferenceObject
 @ stub PsDisableImpersonation
 @ stub PsEstablishWin32Callouts
 @ stub PsGetContextThread

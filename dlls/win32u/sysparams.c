@@ -474,11 +474,11 @@ static void get_monitor_info_from_edid( struct edid_monitor_info *info, const un
     for (i = 0; i < 3; ++i)
     {
         d = w & 0x1f;
-        if (!d || d - 1 > 'Z' - 'A') return;
+        if (!d || d - 1 > 'Z' - 'A') goto skip_id;
         info->monitor_id_string[2 - i] = 'A' + d - 1;
         w >>= 5;
     }
-    if (w) return;
+    if (w) goto skip_id;
     w = edid[10] | (edid[11] << 8); /* Product code, little endian. */
     info->manufacturer = *(unsigned short *)(edid + 8);
     info->product_code = w;
@@ -486,6 +486,7 @@ static void get_monitor_info_from_edid( struct edid_monitor_info *info, const un
     info->flags = MONITOR_INFO_HAS_MONITOR_ID;
     TRACE( "Monitor id %s.\n", info->monitor_id_string );
 
+skip_id:
     for (i = 0; i < 4; ++i)
     {
         if (edid[54 + i * 18] || edid[54 + i * 18 + 1])
@@ -575,6 +576,17 @@ static BOOL read_source_mode( HKEY hkey, UINT index, DEVMODEW *mode )
 
     if (!query_reg_ascii_value( hkey, key, value, sizeof(value_buf) )) return FALSE;
     memcpy( &mode->dmFields, value->Data, offsetof(DEVMODEW, dmICMMethod) - offsetof(DEVMODEW, dmFields) );
+    return TRUE;
+}
+
+static BOOL sync_mode_position( DEVMODEW *mode, const DEVMODEW *layout )
+{
+    if (!(layout->dmFields & DM_POSITION)) return FALSE;
+    if ((mode->dmFields & DM_POSITION) && mode->dmPosition.x == layout->dmPosition.x &&
+        mode->dmPosition.y == layout->dmPosition.y) return FALSE;
+
+    mode->dmFields |= DM_POSITION;
+    mode->dmPosition = layout->dmPosition;
     return TRUE;
 }
 
@@ -2313,7 +2325,7 @@ static DEVMODEW *get_virtual_modes( const DEVMODEW *initial, const DEVMODEW *max
 static void add_modes( const DEVMODEW *current, UINT host_modes_count, const DEVMODEW *host_modes, void *param )
 {
     struct device_manager_ctx *ctx = param;
-    DEVMODEW dummy, physical, detached = *current, virtual, *virtual_modes = NULL;
+    DEVMODEW registry_mode, physical, detached = *current, virtual, *virtual_modes = NULL;
     UINT virtual_count, modes_count = host_modes_count;
     const DEVMODEW *modes = host_modes;
     struct source *source;
@@ -2341,6 +2353,7 @@ static void add_modes( const DEVMODEW *current, UINT host_modes_count, const DEV
         /* HACK: Gamescope doesn't really changes the display mode, pretend it changed to what was requested */
         if (user_driver->pHasWindowManager( "steamcompmgr" ) && read_source_mode( source->key, ENUM_CURRENT_SETTINGS, &virtual ))
         {
+            sync_mode_position( &virtual, &physical );
             WARN( "Faking current mode to %s\n", debugstr_devmodew(&virtual) );
             current = &virtual;
             detached = *current;
@@ -2363,6 +2376,8 @@ static void add_modes( const DEVMODEW *current, UINT host_modes_count, const DEV
     {
         if (!read_source_mode( source->key, ENUM_CURRENT_SETTINGS, &virtual ) || is_detached_mode( &virtual ))
             virtual = physical;
+        else
+            sync_mode_position( &virtual, &physical );
 
         if ((virtual_modes = get_virtual_modes( current, &physical, host_modes, host_modes_count, &virtual_count )))
         {
@@ -2374,8 +2389,10 @@ static void add_modes( const DEVMODEW *current, UINT host_modes_count, const DEV
         }
     }
 
-    if (current == &detached || !read_source_mode( source->key, ENUM_REGISTRY_SETTINGS, &dummy ))
+    if (current == &detached || !read_source_mode( source->key, ENUM_REGISTRY_SETTINGS, &registry_mode ))
         write_source_mode( source->key, ENUM_REGISTRY_SETTINGS, current );
+    else if (sync_mode_position( &registry_mode, &physical ))
+        write_source_mode( source->key, ENUM_REGISTRY_SETTINGS, &registry_mode );
     write_source_mode( source->key, ENUM_CURRENT_SETTINGS, current );
 
     assert( !modes_count || modes->dmDriverExtra == 0 );
