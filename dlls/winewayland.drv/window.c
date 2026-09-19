@@ -189,6 +189,7 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
     BOOL visible, layer_set, server_decor = FALSE;
     DWORD exstyle = NtUserGetWindowLongW(data->hwnd, GWL_EXSTYLE);
     DWORD style = NtUserGetWindowLongW(data->hwnd, GWL_STYLE);
+    struct wl_region *input_region;
 
     TRACE("hwnd=%p\n", data->hwnd);
 
@@ -216,6 +217,14 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
     }
 
     if (!(surface = data->wayland_surface) && !(surface = wayland_surface_create(data->hwnd))) return FALSE;
+
+    /* Pass through mouse events for layered, transparent windows, to match
+     * Windows behavior. */
+    input_region = ((exstyle & WS_EX_TRANSPARENT) && (exstyle & WS_EX_LAYERED)) ?
+                   wl_compositor_create_region(process_wayland.wl_compositor) :
+                   NULL;
+    wl_surface_set_input_region(surface->wl_surface, input_region);
+    if (input_region) wl_region_destroy(input_region);
 
     surface->ensured_contents = WAYLAND_SURFACE_NOT_ENSURED;
 
@@ -255,8 +264,6 @@ static BOOL wayland_win_data_create_wayland_surface(struct wayland_win_data *dat
 
 static void wayland_surface_update_state_toplevel(struct wayland_surface *surface)
 {
-    wayland_surface_sync_window_input_region(surface);
-
     const RECT *rect = &surface->window.rect;
     BOOL processing_config = surface->processing.serial;
 
