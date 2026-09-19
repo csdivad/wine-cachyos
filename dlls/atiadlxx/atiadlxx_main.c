@@ -1343,11 +1343,11 @@ int CDECL ADL2_Display_DisplayMapConfig_Get(ADL_CONTEXT_HANDLE ctx, int adapter_
     TRACE("ctx %p, adapter_index %d, display_map_count %p, display_maps %p, "
             "display_target_count %p, display_targets %p, options %d.\n",
             ctx, adapter_index, display_map_count, display_maps, display_target_count,
-    /* FIXME: not yet supported */
-    if (adapter_index < 0) return ADL_ERR;
             display_targets, options);
 
     if (adapter_index < 0 || adapter_index >= ctx->adapter_count) return ADL_ERR_INVALID_ADL_IDX;
+    /* FIXME: not yet supported */
+    if (adapter_index < 0) return ADL_ERR;
     gpu = ctx->adapters[adapter_index].gpu;
     if (!gpu->display_count) return ADL_ERR_NOT_SUPPORTED;
     *display_map_count = gpu->display_count;

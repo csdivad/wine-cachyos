@@ -82,12 +82,12 @@ enum wayland_window_message
 {
     WM_WAYLAND_INIT_DISPLAY_DEVICES = WM_WINE_FIRST_DRIVER_MSG,
     WM_WAYLAND_CONFIGURE,
+    WM_WAYLAND_RECALC_CLIENT_RECT,
 };
 
 enum wayland_surface_config_state
 {
     WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED = (1 << 0),
-    WM_WAYLAND_RECALC_CLIENT_RECT,
     WAYLAND_SURFACE_CONFIG_STATE_RESIZING = (1 << 1),
     WAYLAND_SURFACE_CONFIG_STATE_TILED = (1 << 2),
     WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN = (1 << 3)
@@ -576,8 +576,6 @@ static inline BOOL intersect_rect(RECT *dst, const RECT *src1, const RECT *src2)
 {
     dst->left = max(src1->left, src2->left);
     dst->top = max(src1->top, src2->top);
-void wayland_surface_sync_shape_input_region(struct wayland_surface *surface, HRGN shape_region);
-void wayland_surface_sync_window_input_region(struct wayland_surface *surface);
     dst->right = min(src1->right, src2->right);
     dst->bottom = min(src1->bottom, src2->bottom);
     return !IsRectEmpty(dst);

@@ -244,9 +244,6 @@ static BOOL wayland_pbuffer_create(HDC hdc, int format, BOOL largest, GLenum tex
     /* Wayland EGL doesn't support pixmap or pbuffer, create a dummy window surface to act as the target render surface. */
     if (!(gl->surface = wl_compositor_create_surface(process_wayland.wl_compositor))) goto err;
     if (!(gl->window = wl_egl_window_create(gl->surface, *width, *height))) goto err;
-    if (!surface->toplevel && !surface->hwnd_dmabuf_producer)
-        return TRUE;
-
     if (!(gl->base.surface = funcs->p_eglCreateWindowSurface(egl->display, config, gl->window, NULL))) goto err;
 
     TRACE("Created pbuffer %s with egl_surface %p\n", debugstr_opengl_drawable(&gl->base), gl->base.surface);
