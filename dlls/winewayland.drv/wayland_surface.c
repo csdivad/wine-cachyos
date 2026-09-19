@@ -2051,6 +2051,15 @@ err:
     return NULL;
 }
 
+static void wayland_client_surface_cancel_frame_callback(struct wayland_client_surface *client)
+{
+    struct wl_callback *callback;
+
+    if ((callback = InterlockedExchangePointer((void **)&client->wl_callback, NULL)))
+        wl_callback_destroy(callback);
+    if (client->throttle) NtSetEvent(client->throttle, NULL);
+}
+
 void wayland_client_surface_attach(struct wayland_client_surface *client, HWND toplevel)
 {
     struct wayland_win_data *toplevel_data;
@@ -2060,6 +2069,8 @@ void wayland_client_surface_attach(struct wayland_client_surface *client, HWND t
 
     if (!toplevel)
     {
+        wayland_client_surface_cancel_frame_callback(client);
+
         if (client->wl_subsurface)
         {
             wl_subsurface_destroy(client->wl_subsurface);
