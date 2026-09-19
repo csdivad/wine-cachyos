@@ -107,6 +107,7 @@ struct instance
 {
     struct vulkan_instance obj;
     BOOL enable_win32_surface;
+    BOOL hades_present_modes;
 
     struct list utils_messengers;
     struct list report_callbacks;
@@ -988,6 +989,17 @@ static void free_debug_report_callbacks( struct list *callbacks )
     }
 }
 
+static BOOL is_hades(void)
+{
+    static const WCHAR hadesW[] = {'H','a','d','e','s','.','e','x','e',0};
+    const WCHAR *p, *name = NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer;
+
+    if (!name) return FALSE;
+    if ((p = wcsrchr( name, '/' ))) name = p + 1;
+    if ((p = wcsrchr( name, '\\' ))) name = p + 1;
+    return !wcsicmp( name, hadesW );
+}
+
 static VkResult convert_instance_create_info( struct mempool *pool, VkInstanceCreateInfo *info, struct instance *instance )
 {
     const VkBaseInStructure *header = (const VkBaseInStructure *)info;
@@ -1033,6 +1045,17 @@ static VkResult convert_instance_create_info( struct mempool *pool, VkInstanceCr
         instance->obj.extensions.has_VK_EXT_surface_maintenance1 = 1;
     if (vulkan_funcs.host_extensions.has_VK_KHR_get_physical_device_properties2)
         instance->obj.extensions.has_VK_KHR_get_physical_device_properties2 = 1;
+    if (is_hades() && info->pApplicationInfo && info->pApplicationInfo->pEngineName &&
+        !strcmp( info->pApplicationInfo->pEngineName, "TheForge" ) &&
+        instance->obj.extensions.has_VK_KHR_wayland_surface &&
+        vulkan_funcs.host_extensions.has_VK_KHR_get_physical_device_properties2 &&
+        vulkan_funcs.host_extensions.has_VK_KHR_get_surface_capabilities2 &&
+        vulkan_funcs.host_extensions.has_VK_EXT_surface_maintenance1)
+    {
+        instance->hades_present_modes = TRUE;
+        instance->obj.extensions.has_VK_KHR_get_surface_capabilities2 = 1;
+        instance->obj.extensions.has_VK_EXT_surface_maintenance1 = 1;
+    }
     if (use_external_memory())
         instance->obj.extensions.has_VK_KHR_external_memory_capabilities = 1;
 
@@ -1325,6 +1348,22 @@ static void parse_device_extensions( struct vulkan_device_extensions *extensions
     if (next > str) add_device_extension( str, next - str, extensions );
 }
 
+static BOOL use_hades_present_modes( struct vulkan_physical_device *physical_device )
+{
+    struct vulkan_instance *instance = physical_device->instance;
+    VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT maintenance =
+        {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT};
+    VkPhysicalDeviceFeatures2 features = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, .pNext = &maintenance};
+
+    if (!CONTAINING_RECORD( instance, struct instance, obj )->hades_present_modes ||
+        !physical_device->extensions.has_VK_EXT_swapchain_maintenance1 ||
+        !instance->p_vkGetPhysicalDeviceFeatures2KHR || !instance->p_vkGetPhysicalDeviceSurfaceCapabilities2KHR)
+        return FALSE;
+
+    instance->p_vkGetPhysicalDeviceFeatures2KHR( physical_device->host.physical_device, &features );
+    return maintenance.swapchainMaintenance1;
+}
+
 static VkResult convert_device_create_info( struct vulkan_physical_device *physical_device, VkDeviceCreateInfo *info,
                                             struct mempool *pool, struct vulkan_device *device )
 {
@@ -1379,6 +1418,21 @@ static VkResult convert_device_create_info( struct vulkan_physical_device *physi
     if (device->extensions.has_VK_KHR_swapchain && instance->extensions.has_VK_EXT_surface_maintenance1 &&
         physical_device->extensions.has_VK_EXT_swapchain_maintenance1)
         device->extensions.has_VK_EXT_swapchain_maintenance1 = 1;
+
+    if (device->extensions.has_VK_KHR_swapchain && use_hades_present_modes( physical_device ))
+    {
+        VkPhysicalDeviceSwapchainMaintenance1FeaturesEXT *maintenance;
+
+        if (!(maintenance = (void *)find_next_struct( info->pNext,
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT )))
+        {
+            if (!(maintenance = mem_alloc( pool, sizeof(*maintenance) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+            maintenance->sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SWAPCHAIN_MAINTENANCE_1_FEATURES_EXT;
+            maintenance->pNext = (void *)info->pNext;
+            info->pNext = maintenance;
+        }
+        maintenance->swapchainMaintenance1 = VK_TRUE;
+    }
 
     if (!(extensions = mem_alloc( pool, sizeof(device->extensions) * 8 * sizeof(*extensions) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
 #define USE_VK_EXT(x) if (device->extensions.has_ ## x) extensions[count++] = #x;
@@ -2352,17 +2406,43 @@ static void adjust_surface_capabilities( struct vulkan_instance *instance, struc
     capabilities->currentExtent.height = client_rect.bottom - client_rect.top;
 }
 
+static BOOL get_hades_surface_capabilities( struct vulkan_physical_device *physical_device, struct surface *surface,
+                                             VkPresentModeKHR present_mode, VkSurfaceCapabilitiesKHR *capabilities )
+{
+    struct vulkan_instance *instance = physical_device->instance;
+    VkSurfacePresentModeEXT mode = {.sType = VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_EXT, .presentMode = present_mode};
+    VkPhysicalDeviceSurfaceInfo2KHR info = {.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR,
+                                          .pNext = &mode, .surface = surface->obj.host.surface};
+    VkSurfaceCapabilities2KHR caps = {.sType = VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR};
+
+    if (!use_hades_present_modes( physical_device )) return FALSE;
+    if (instance->p_vkGetPhysicalDeviceSurfaceCapabilities2KHR( physical_device->host.physical_device, &info, &caps ))
+        return FALSE;
+    if (caps.surfaceCapabilities.minImageCount > 3 ||
+        (caps.surfaceCapabilities.maxImageCount && caps.surfaceCapabilities.maxImageCount < 3))
+        return FALSE;
+
+    *capabilities = caps.surfaceCapabilities;
+    return TRUE;
+}
+
 static VkResult win32u_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( VkPhysicalDevice client_physical_device, VkSurfaceKHR client_surface,
                                                                   VkSurfaceCapabilitiesKHR *capabilities )
 {
     struct vulkan_physical_device *physical_device = vulkan_physical_device_from_handle( client_physical_device );
     struct surface *surface = surface_from_handle( client_surface );
     struct vulkan_instance *instance = physical_device->instance;
+    VkSurfaceCapabilitiesKHR hades_caps;
     VkResult res;
 
     if (!NtUserIsWindow( surface->hwnd )) return VK_ERROR_SURFACE_LOST_KHR;
     res = instance->p_vkGetPhysicalDeviceSurfaceCapabilitiesKHR( physical_device->host.physical_device,
                                                        surface->obj.host.surface, capabilities );
+    if (!res && get_hades_surface_capabilities( physical_device, surface, VK_PRESENT_MODE_FIFO_KHR, &hades_caps ))
+    {
+        capabilities->minImageCount = hades_caps.minImageCount;
+        capabilities->maxImageCount = 3;
+    }
     if (!res) adjust_surface_capabilities( instance, surface, capabilities );
     return res;
 }
@@ -2374,6 +2454,7 @@ static VkResult win32u_vkGetPhysicalDeviceSurfaceCapabilities2KHR( VkPhysicalDev
     struct surface *surface = surface_from_handle( surface_info->surface );
     VkPhysicalDeviceSurfaceInfo2KHR surface_info_host = *surface_info;
     struct vulkan_instance *instance = physical_device->instance;
+    VkSurfaceCapabilitiesKHR hades_caps;
     VkResult res;
 
     if (!instance->p_vkGetPhysicalDeviceSurfaceCapabilities2KHR)
@@ -2389,6 +2470,12 @@ static VkResult win32u_vkGetPhysicalDeviceSurfaceCapabilities2KHR( VkPhysicalDev
     if (!NtUserIsWindow( surface->hwnd )) return VK_ERROR_SURFACE_LOST_KHR;
     res = instance->p_vkGetPhysicalDeviceSurfaceCapabilities2KHR( physical_device->host.physical_device,
                                                                      &surface_info_host, capabilities );
+    if (!res && !find_next_struct( surface_info->pNext, VK_STRUCTURE_TYPE_SURFACE_PRESENT_MODE_EXT ) &&
+        get_hades_surface_capabilities( physical_device, surface, VK_PRESENT_MODE_FIFO_KHR, &hades_caps ))
+    {
+        capabilities->surfaceCapabilities.minImageCount = hades_caps.minImageCount;
+        capabilities->surfaceCapabilities.maxImageCount = 3;
+    }
     if (!res) adjust_surface_capabilities( instance, surface, &capabilities->surfaceCapabilities );
     return res;
 }
@@ -3324,6 +3411,7 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
                                              const VkAllocationCallbacks *allocator, VkSwapchainKHR *ret )
 {
     VkSwapchainPresentScalingCreateInfoEXT scaling = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_SCALING_CREATE_INFO_EXT};
+    VkSwapchainPresentModesCreateInfoEXT present_modes = {.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT};
     struct swapchain *swapchain, *old_swapchain = swapchain_from_handle( create_info->oldSwapchain );
     struct surface *surface = surface_from_handle( create_info->surface );
     struct vulkan_device *device = vulkan_device_from_handle( client_device );
@@ -3520,6 +3608,34 @@ void win32u_vkDestroySwapchainKHR( VkDevice client_device, VkSwapchainKHR client
         destroy_pipeline(device, &swapchain->blit_pipeline);
         destroy_pipeline(device, &swapchain->fsr_easu_pipeline);
         destroy_pipeline(device, &swapchain->fsr_rcas_pipeline);
+    /* Hades indexes three-entry command-pool arrays with the acquired image.
+     * Use per-mode limits instead of Wayland's conservative legacy minimum,
+     * and declare the mode to prevent an implicit MAILBOX image-count bump. */
+    if (device->extensions.has_VK_EXT_swapchain_maintenance1 &&
+        !find_next_struct( create_info_host.pNext, VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT ) &&
+        use_hades_present_modes( physical_device ))
+    {
+        VkPresentModeKHR mode = create_info_host.presentMode;
+        BOOL supported = get_hades_surface_capabilities( physical_device, surface, mode, &capabilities );
+
+        if (!supported)
+        {
+            mode = VK_PRESENT_MODE_FIFO_KHR;
+            supported = get_hades_surface_capabilities( physical_device, surface, mode, &capabilities );
+        }
+        if (supported)
+        {
+            create_info_host.presentMode = mode;
+            create_info_host.minImageCount = 3;
+            present_modes.presentModeCount = 1;
+            present_modes.pPresentModes = &create_info_host.presentMode;
+            present_modes.pNext = create_info_host.pNext;
+            create_info_host.pNext = &present_modes;
+            TRACE( "Hades host swapchain: 3 images, present mode %u (requested %u)\n",
+                   create_info_host.presentMode, create_info->presentMode );
+        }
+    }
+
         device->p_vkDestroyDescriptorSetLayout( device->host.device, swapchain->descriptor_set_layout, NULL );
         device->p_vkDestroyDescriptorPool( device->host.device, swapchain->descriptor_pool, NULL );
         device->p_vkDestroySampler( device->host.device, swapchain->sampler, NULL );
