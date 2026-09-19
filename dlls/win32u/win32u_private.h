@@ -277,6 +277,7 @@ extern BOOL is_service_process(void);
 struct tagWND;
 extern BOOL client_to_screen( HWND hwnd, POINT *pt );
 extern void destroy_thread_windows(void);
+extern void destroy_abandoned_window( HWND hwnd );
 extern LRESULT destroy_window( HWND hwnd );
 extern BOOL get_client_rect( HWND hwnd, RECT *rect, UINT dpi );
 extern BOOL get_present_rect( HWND hwnd, RECT *rect, UINT dpi );

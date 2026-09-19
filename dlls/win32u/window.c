@@ -39,6 +39,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(win);
 #define USER_HANDLE_FROM_INDEX(index, generation) UlongToHandle( (index << 1) + FIRST_USER_HANDLE + (generation << 16) )
 
 static void *client_objects[MAX_USER_HANDLES];
+static struct list window_objects = LIST_INIT(window_objects);
 
 #define SWP_AGG_NOGEOMETRYCHANGE \
     (SWP_NOSIZE | SWP_NOCLIENTSIZE | SWP_NOZORDER)
@@ -5471,6 +5472,7 @@ static void free_window_handle( HWND hwnd )
             set_user_handle_ptr( hwnd, NULL );
         }
         SERVER_END_REQ;
+        list_remove( &win->entry );
         user_unlock();
         free( win->pScroll );
         free( win->text );
@@ -5641,55 +5643,61 @@ BOOL WINAPI NtUserDestroyWindow( HWND hwnd )
     return user_destroy_window( hwnd, TRUE );
 }
 
+/* Detach the local object before releasing resources outside the USER lock. */
+static void detach_window_object( WND *win, struct list *windows, struct list *drawables )
+{
+    WORD index = USER_HANDLE_TO_INDEX( win->handle );
+
+    free_dce( win->dce, win->handle, drawables );
+    InterlockedCompareExchangePointer( &client_objects[index], NULL, win );
+    list_remove( &win->entry );
+    list_add_head( windows, &win->entry );
+}
+
+static void destroy_window_objects( struct list *windows, struct list *drawables )
+{
+    WND *win, *next;
+
+    release_opengl_drawables( drawables );
+    LIST_FOR_EACH_ENTRY_SAFE( win, next, windows, WND, entry )
+    {
+        TRACE( "destroying %p\n", win->handle );
+
+        list_remove( &win->entry );
+        detach_client_surfaces( win->handle );
+        user_driver->pDestroyWindow( win->handle );
+        if (win->current_drawable) opengl_drawable_release( win->current_drawable );
+        if (win->unused_drawable) opengl_drawable_release( win->unused_drawable );
+
+        if ((win->dwStyle & (WS_CHILD | WS_POPUP)) != WS_CHILD)
+            NtUserDestroyMenu( (HMENU)win->wIDmenu );
+        NtUserDestroyMenu( win->hSysMenu );
+        if (win->surface)
+        {
+            register_window_surface( win->surface, NULL );
+            window_surface_release( win->surface );
+        }
+        free( win->pScroll );
+        free( win->text );
+        free( win );
+    }
+}
+
 /*****************************************************************************
  *           destroy_thread_windows
  *
- * Destroy all window owned by the current thread.
+ * Destroy all windows owned by the current thread.
  */
 void destroy_thread_windows(void)
 {
-    struct destroy_entry
-    {
-        HWND handle;
-        HMENU menu;
-        HMENU sys_menu;
-        struct opengl_drawable *current_drawable;
-        struct opengl_drawable *unused_drawable;
-        struct window_surface *surface;
-        struct destroy_entry *next;
-    } *entry, *free_list = NULL;
-    struct list drawables = LIST_INIT(drawables);
+    struct list windows = LIST_INIT(windows), drawables = LIST_INIT(drawables);
     HANDLE handle = 0;
     WND *win;
 
-    /* recycle WND structs as destroy_entry structs */
-    C_ASSERT( sizeof(struct destroy_entry) <= sizeof(WND) );
-
     user_lock();
     while ((win = next_thread_user_object( GetCurrentThreadId(), &handle, NTUSER_OBJ_WINDOW )))
-    {
-        BOOL is_child = (win->dwStyle & (WS_CHILD | WS_POPUP)) == WS_CHILD;
-        struct destroy_entry tmp = {0};
-
-        free_dce( win->dce, win->handle, &drawables );
-        set_user_handle_ptr( handle, NULL );
-        free( win->pScroll );
-        free( win->text );
-
-        /* recycle the WND struct as a destroy_entry struct */
-        entry = (struct destroy_entry *)win;
-        tmp.handle = win->handle;
-        if (!is_child) tmp.menu = (HMENU)win->wIDmenu;
-        tmp.sys_menu = win->hSysMenu;
-        tmp.current_drawable = win->current_drawable;
-        tmp.unused_drawable = win->unused_drawable;
-        tmp.surface = win->surface;
-        *entry = tmp;
-
-        entry->next = free_list;
-        free_list = entry;
-    }
-    if (free_list)
+        detach_window_object( win, &windows, &drawables );
+    if (!list_empty( &windows ))
     {
         SERVER_START_REQ( destroy_window )
         {
@@ -5700,27 +5708,31 @@ void destroy_thread_windows(void)
     }
     user_unlock();
 
-    release_opengl_drawables( &drawables );
+    destroy_window_objects( &windows, &drawables );
+}
 
-    while ((entry = free_list))
+void destroy_abandoned_window( HWND hwnd )
+{
+    struct list windows = LIST_INIT(windows), drawables = LIST_INIT(drawables);
+    WND *win;
+
+    user_lock();
+    /* Server handles may already be reused; only take the exact old local
+     * object. Multiple GUI threads can receive the same notification. */
+    if (!is_window( hwnd ))
     {
-        free_list = entry->next;
-        TRACE( "destroying %p\n", entry );
-
-        detach_client_surfaces( entry->handle );
-        user_driver->pDestroyWindow( entry->handle );
-        if (entry->current_drawable) opengl_drawable_release( entry->current_drawable );
-        if (entry->unused_drawable) opengl_drawable_release( entry->unused_drawable );
-
-        NtUserDestroyMenu( entry->menu );
-        NtUserDestroyMenu( entry->sys_menu );
-        if (entry->surface)
+        LIST_FOR_EACH_ENTRY( win, &window_objects, WND, entry )
         {
-            register_window_surface( entry->surface, NULL );
-            window_surface_release( entry->surface );
+            if (win->handle != hwnd) continue;
+            detach_window_object( win, &windows, &drawables );
+            break;
         }
-        free( entry );
     }
+    user_unlock();
+
+    /* The thread's DLLs may already have been unloaded. No window procedure
+     * or DLL_THREAD_DETACH callback may be invoked here. */
+    destroy_window_objects( &windows, &drawables );
 }
 
 /***********************************************************************
@@ -5804,6 +5816,7 @@ static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
     win->winproc    = get_class_winproc( class );
     win->hInstance  = instance;
     win->cbWndExtra = extra_bytes;
+    list_add_tail( &window_objects, &win->entry );
     set_user_handle_ptr( handle, win );
     if (is_winproc_unicode( win->winproc, !ansi )) win->flags |= WIN_ISUNICODE;
     return win;

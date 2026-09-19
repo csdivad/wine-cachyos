@@ -2216,6 +2216,8 @@ void free_window_handle( struct window *win )
         post_message( win->parent->handle, WM_PARENTNOTIFY, WM_DESTROY, win->handle );
     }
 
+    if (win->thread && win->thread->state == TERMINATED)
+        notify_abandoned_window( win->thread, win->handle );
     detach_window_thread( win );
 
     if (win->parent) set_parent_window( win, NULL );

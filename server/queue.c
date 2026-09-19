@@ -3067,6 +3067,32 @@ void send_notify_message( user_handle_t win, unsigned int message, lparam_t wpar
     release_object( thread );
 }
 
+/* Let a surviving GUI thread release the client resources of a dead thread's window. */
+void notify_abandoned_window( struct thread *owner, user_handle_t win )
+{
+    struct thread *thread;
+    struct message *msg;
+
+    LIST_FOR_EACH_ENTRY( thread, &owner->process->thread_list, struct thread, proc_entry )
+    {
+        if (thread->state == TERMINATED || thread->is_system || !thread->queue) continue;
+        if (!(msg = mem_alloc( sizeof(*msg) ))) continue;
+
+        msg->type      = MSG_NOTIFY;
+        msg->win       = 0; /* not tied to the window's dead message queue */
+        msg->msg       = WM_WINE_DESTROY_ABANDONED_WINDOW;
+        msg->wparam    = win;
+        msg->lparam    = 0;
+        msg->result    = NULL;
+        msg->data      = NULL;
+        msg->data_size = 0;
+        get_message_defaults( thread->queue, &msg->x, &msg->y, &msg->time );
+
+        list_add_tail( &thread->queue->msg_list[SEND_MESSAGE], &msg->entry );
+        set_queue_bits( thread->queue, QS_SENDMESSAGE );
+    }
+}
+
 /* post a win event */
 void post_win_event( struct thread *thread, unsigned int event,
                      user_handle_t win, unsigned int object_id,

@@ -2198,6 +2198,9 @@ static LRESULT handle_internal_message( HWND hwnd, UINT msg, WPARAM wparam, LPAR
     {
     case WM_WINE_DESTROYWINDOW:
         return destroy_window( hwnd );
+    case WM_WINE_DESTROY_ABANDONED_WINDOW:
+        destroy_abandoned_window( UlongToHandle(wparam) );
+        return 0;
     case WM_WINE_SETWINDOWPOS:
         if (is_desktop_window( hwnd )) return 0;
         return set_window_pos( (WINDOWPOS *)lparam, 0, 0 );

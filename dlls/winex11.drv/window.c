@@ -3023,14 +3023,17 @@ done:
  */
 void X11DRV_DestroyWindow( HWND hwnd )
 {
-    struct x11drv_thread_data *thread_data = x11drv_thread_data();
+    struct x11drv_thread_data *thread_data;
     struct x11drv_win_data *data;
 
     if (!(data = get_win_data( hwnd ))) return;
 
     destroy_whole_window( data, FALSE );
-    if (thread_data->last_focus == hwnd) thread_data->last_focus = 0;
-    if (thread_data->last_xic_hwnd == hwnd) thread_data->last_xic_hwnd = 0;
+    if ((thread_data = x11drv_thread_data()))
+    {
+        if (thread_data->last_focus == hwnd) thread_data->last_focus = 0;
+        if (thread_data->last_xic_hwnd == hwnd) thread_data->last_xic_hwnd = 0;
+    }
     if (data->icon_pixmap) XFreePixmap( gdi_display, data->icon_pixmap );
     if (data->icon_mask) XFreePixmap( gdi_display, data->icon_mask );
     if (data->parent) host_window_release( data->parent );
