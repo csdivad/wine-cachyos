@@ -375,7 +375,6 @@ struct vulkan_funcs
     PFN_vkMapMemory p_vkMapMemory;
     PFN_vkMapMemory2KHR p_vkMapMemory2KHR;
     PFN_vkQueuePresentKHR p_vkQueuePresentKHR;
-    PFN_vkSetLatencyMarkerNV p_vkSetLatencyMarkerNV;
     PFN_vkSetLatencySleepModeNV p_vkSetLatencySleepModeNV;
     PFN_vkQueueSubmit p_vkQueueSubmit;
     PFN_vkQueueSubmit2 p_vkQueueSubmit2;

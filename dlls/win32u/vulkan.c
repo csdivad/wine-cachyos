@@ -3387,53 +3387,6 @@ static VkResult win32u_vkSetLatencySleepModeNV(VkDevice device, VkSwapchainKHR s
     return vk_device->p_vkSetLatencySleepModeNV(vk_device->host.device, vk_swapchain->obj.host.swapchain, &sleep_mode_info_host);
 }
 
-static VkResult win32u_vkLatencySleepNV( VkDevice device, VkSwapchainKHR swapchain,
-                                         const VkLatencySleepInfoNV *sleep_info )
-{
-    struct vulkan_device *vk_device = vulkan_device_from_handle( device );
-    struct swapchain *vk_swapchain = swapchain_from_handle( swapchain );
-    VkLatencySleepInfoNV sleep_info_host = *sleep_info;
-    struct vulkan_semaphore *semaphore;
-
-    if (!vk_swapchain) return VK_ERROR_OUT_OF_DATE_KHR;
-    if (vk_swapchain->managed) return VK_SUCCESS;
-
-    semaphore = sleep_info_host.signalSemaphore
-            ? vulkan_semaphore_from_handle( sleep_info_host.signalSemaphore ) : NULL;
-    sleep_info_host.signalSemaphore = semaphore ? semaphore->host.semaphore : 0;
-
-    return vk_device->p_vkLatencySleepNV( vk_device->host.device,
-                                          vk_swapchain->obj.host.swapchain, &sleep_info_host );
-}
-
-static void win32u_vkSetLatencyMarkerNV( VkDevice device, VkSwapchainKHR swapchain,
-                                         const VkSetLatencyMarkerInfoNV *latency_marker_info )
-{
-    struct vulkan_device *vk_device = vulkan_device_from_handle( device );
-    struct swapchain *vk_swapchain = swapchain_from_handle( swapchain );
-
-    if (!vk_swapchain || vk_swapchain->managed) return;
-
-    vk_device->p_vkSetLatencyMarkerNV( vk_device->host.device,
-                                       vk_swapchain->obj.host.swapchain, latency_marker_info );
-}
-
-static void win32u_vkGetLatencyTimingsNV( VkDevice device, VkSwapchainKHR swapchain,
-                                          VkGetLatencyMarkerInfoNV *latency_marker_info )
-{
-    struct vulkan_device *vk_device = vulkan_device_from_handle( device );
-    struct swapchain *vk_swapchain = swapchain_from_handle( swapchain );
-
-    if (!vk_swapchain || vk_swapchain->managed)
-    {
-        latency_marker_info->timingCount = 0;
-        return;
-    }
-
-    vk_device->p_vkGetLatencyTimingsNV( vk_device->host.device,
-                                        vk_swapchain->obj.host.swapchain, latency_marker_info );
-}
-
 static BOOL surface_get_fshack_dpi( struct surface *surface )
 {
     UINT dpi = NtUserGetDpiForWindow( surface->hwnd ), raw = NtUserGetWinMonitorDpi( surface->hwnd, MDT_RAW_DPI );
@@ -5391,7 +5344,6 @@ static struct vulkan_funcs vulkan_funcs =
     .p_vkMapMemory = win32u_vkMapMemory,
     .p_vkMapMemory2KHR = win32u_vkMapMemory2KHR,
     .p_vkQueuePresentKHR = win32u_vkQueuePresentKHR,
-    .p_vkSetLatencyMarkerNV = win32u_vkSetLatencyMarkerNV,
     .p_vkSetLatencySleepModeNV = win32u_vkSetLatencySleepModeNV,
     .p_vkQueueSubmit = win32u_vkQueueSubmit,
     .p_vkQueueSubmit2 = win32u_vkQueueSubmit2,
