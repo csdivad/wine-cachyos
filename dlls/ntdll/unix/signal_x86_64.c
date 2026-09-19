@@ -2043,6 +2043,8 @@ static inline DWORD is_privileged_instr( CONTEXT *context )
     return 0;
 }
 
+static BOOL use_eos_syscall_hack;
+
 #ifdef HAVE_SECCOMP
 static void sigsys_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
@@ -2056,6 +2058,33 @@ static void sigsys_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     {
         /* Test syscall from the Unix side (install_bpf). */
         RAX_sig(ucontext) = STATUS_INVALID_PARAMETER;
+        return;
+    }
+
+    /* HACK: The EOS version of easy anti cheat executes linux syscalls in a high address
+     * to evade the older seccomp based syscall emulation. It maps a page at
+     * 0x700100000000 and uses it to execute syscalls.
+     * The child process does more of the same but at different address.
+     * Detect this case and execute the linux syscall instead. */
+    if ((long)RIP_sig(ucontext) >= 0x700100000000 && use_eos_syscall_hack)
+    {
+        /* block syscall user dispatch, if it was already blocked we wont be in this handler */
+        __asm__ (
+            "movq %%gs:0x30,%%r13\n\t"
+            "movb $0, 0x340(%%r13)\n\t"
+            ::: "r13"
+        );
+
+        RAX_sig(ucontext) = syscall(RAX_sig(ucontext), RDI_sig(ucontext), RSI_sig(ucontext),
+                                    RDX_sig(ucontext), R10_sig(ucontext), R8_sig(ucontext),
+                                    R9_sig(ucontext));
+
+        /* restore syscall user dispatch state */
+        __asm__ (
+            "movq %%gs:0x30,%%r13\n\t"
+            "movb $1, 0x340(%%r13)\n\t"
+            ::: "r13"
+        );
         return;
     }
 
@@ -2814,9 +2843,6 @@ static void trap_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         break;
     }
     setup_raise_exception( ucontext, &rec, &context );
-
-static BOOL use_eos_syscall_hack;
-
 }
 
 
@@ -2839,32 +2865,6 @@ static void fpe_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         rec.ExceptionCode = EXCEPTION_ARRAY_BOUNDS_EXCEEDED;
         break;
 
-    /* HACK: The EOS version of easy anti cheat executes linux syscalls in a high address
-     * to evade the older seccomp based syscall emulation. It maps a page at
-     * 0x700100000000 and uses it to execute syscalls.
-     * The child process does more of the same but at different address.
-     * Detect this case and execute the linux syscall instead. */
-    if ((long)RIP_sig(ucontext) >= 0x700100000000 && use_eos_syscall_hack)
-    {
-        /* block syscall user dispatch, if it was already blocked we wont be in this handler */
-        __asm__ (
-            "movq %%gs:0x30,%%r13\n\t"
-            "movb $0, 0x340(%%r13)\n\t"
-            ::: "r13"
-        );
-
-        RAX_sig(ucontext) = syscall(RAX_sig(ucontext), RDI_sig(ucontext), RSI_sig(ucontext),
-                                    RDX_sig(ucontext), R10_sig(ucontext), R8_sig(ucontext),
-                                    R9_sig(ucontext));
-
-        /* restore syscall user dispatch state */
-        __asm__ (
-            "movq %%gs:0x30,%%r13\n\t"
-            "movb $1, 0x340(%%r13)\n\t"
-            ::: "r13"
-        );
-        return;
-    }
     case FPE_INTDIV:
         rec.ExceptionCode = EXCEPTION_INT_DIVIDE_BY_ZERO;
         break;
@@ -3086,7 +3086,6 @@ void ldt_set_entry( WORD sel, LDT_ENTRY entry )
     ldt_info.limit           = entry.LimitLow | (entry.HighWord.Bits.LimitHi << 16);
     ldt_info.seg_32bit       = entry.HighWord.Bits.Default_Big;
     ldt_info.contents        = (entry.HighWord.Bits.Type >> 2) & 3;
-        const char *env;
     ldt_info.read_exec_only  = !(entry.HighWord.Bits.Type & 2);
     ldt_info.limit_in_pages  = entry.HighWord.Bits.Granularity;
     ldt_info.seg_not_present = !entry.HighWord.Bits.Pres;
@@ -3195,6 +3194,7 @@ void signal_init_process(void)
     WOW_TEB *wow_teb = get_wow_teb( NtCurrentTeb() );
     struct ntdll_thread_data *thread_data = ntdll_get_thread_data();
     void *ptr, *kernel_stack = (char *)thread_data->kernel_stack + kernel_stack_size;
+    const char *env;
 
     if (user_shared_data->XState.Size) xstate_size = user_shared_data->XState.Size - sizeof(XSAVE_FORMAT);
     frame_size = offsetof( struct syscall_frame, xstate ) + xstate_size;
@@ -3244,6 +3244,10 @@ void signal_init_process(void)
     if (sigaction( SIGSYS, &sig_act, NULL ) == -1) goto error;
 #endif
     install_bpf(&sig_act);
+
+    /* We don't unset the env since child processes also need to inherit the same syscall hack */
+    use_eos_syscall_hack = (env = getenv("PROTON_SYSCALL_HACK")) && !strcmp(env, "1");
+    if (use_eos_syscall_hack) ERR_(seh)("Using EAC bootstrapper (EOS) syscall workaround!\n");
     return;
 
  error:
@@ -3331,12 +3335,6 @@ __attribute__((used)) void init_syscall_frame( LPTHREAD_START_ROUTINE entry, voi
             amd64_thread_data()->dr3 = context.Dr3;
             amd64_thread_data()->dr6 = context.Dr6;
             amd64_thread_data()->dr7 = context.Dr7;
-        }
-        else
-        {
-            /* We don't unset the env since child processes also need to inherit the same syscall hack */
-            use_eos_syscall_hack = (env = getenv("PROTON_SYSCALL_HACK")) && !strcmp(env, "1");
-            if (use_eos_syscall_hack) ERR_(seh)("Using EAC bootstrapper (EOS) syscall workaround!\n");
         }
     }
 
