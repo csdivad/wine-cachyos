@@ -1722,7 +1722,7 @@ static NTSTATUS add_hwloc_numa_nodes(hwloc_topology_t topology)
 
     for (obj = hwloc_get_obj_by_type(topology, HWLOC_OBJ_NUMANODE, 0); obj != NULL; obj = obj->next_cousin)
     {
-        if (!logical_proc_info_add_numa_node(obj->logical_index, hwloc_bitmap_to_ulong(obj->cpuset)))
+        if (!logical_proc_info_add_numa_node(hwloc_bitmap_to_ulong(obj->cpuset), obj->logical_index))
             return STATUS_NO_MEMORY;
     }
     return STATUS_SUCCESS;
@@ -4866,6 +4866,19 @@ NTSTATUS WINAPI NtPowerInformation( POWER_INFORMATION_LEVEL level, void *input, 
         PowerCaps->RtcWake = PowerSystemSleeping1;
         PowerCaps->MinDeviceWakeState = PowerSystemUnspecified;
         PowerCaps->DefaultLowLatencyWake = PowerSystemUnspecified;
+        return STATUS_SUCCESS;
+    }
+
+    case SystemPowerInformation:
+    {
+        static int once;
+        SYSTEM_POWER_INFORMATION *info = output;
+
+        if (!once++) FIXME("semi-stub: SystemPowerInformation\n");
+        if (out_size < sizeof(SYSTEM_POWER_INFORMATION)) return STATUS_BUFFER_TOO_SMALL;
+        memset(info, 0, sizeof(SYSTEM_POWER_INFORMATION));
+        info->MaxIdlenessAllowed = 100;
+        info->TimeRemaining = 600;
         return STATUS_SUCCESS;
     }
 

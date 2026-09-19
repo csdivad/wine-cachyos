@@ -76,6 +76,7 @@ typedef struct tagWND
     int                clip_clients;  /* Has client surfaces that needs to be clipped out */
     int                cbWndExtra;    /* class cbWndExtra at window creation */
     DWORD_PTR          userdata;      /* User private data */
+    struct list        entry;         /* process window objects, including dead server handles */
     DWORD              wExtra[1];     /* Window extra bytes */
 } WND;
 
@@ -131,6 +132,7 @@ struct user_thread_info
     HKL                           kbd_layout;             /* Current keyboard layout */
     UINT                          kbd_layout_id;          /* Current keyboard layout ID */
     struct hardware_msg_data     *rawinput;               /* Current rawinput message data */
+    WCHAR                         kbd_deadkey;            /* Current keyboard dead key */
     struct touchinput_thread_data *touchinput;            /* touch input thread local buffer */
     UINT                          spy_indent;             /* Current spy indent */
     BOOL                          clipping_cursor;        /* thread is currently clipping */

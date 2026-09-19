@@ -2187,7 +2187,7 @@ void free_window_handle( struct window *win )
         else
             send_notify_message( child->handle, WM_WINE_DESTROYWINDOW, 0, 0 );
     }
-    LIST_FOR_EACH_ENTRY_SAFE( child, next, &win->children, struct window, entry )
+    LIST_FOR_EACH_ENTRY_SAFE( child, next, &win->unlinked, struct window, entry )
     {
         if (!child->handle) continue;
         if (!win->thread || !child->thread || win->thread == child->thread)
@@ -2216,6 +2216,8 @@ void free_window_handle( struct window *win )
         post_message( win->parent->handle, WM_PARENTNOTIFY, WM_DESTROY, win->handle );
     }
 
+    if (win->thread && win->thread->state == TERMINATED)
+        notify_abandoned_window( win->thread, win->handle );
     detach_window_thread( win );
 
     if (win->parent) set_parent_window( win, NULL );

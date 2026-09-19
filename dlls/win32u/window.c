@@ -39,6 +39,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(win);
 #define USER_HANDLE_FROM_INDEX(index, generation) UlongToHandle( (index << 1) + FIRST_USER_HANDLE + (generation << 16) )
 
 static void *client_objects[MAX_USER_HANDLES];
+static struct list window_objects = LIST_INIT(window_objects);
 
 #define SWP_AGG_NOGEOMETRYCHANGE \
     (SWP_NOSIZE | SWP_NOCLIENTSIZE | SWP_NOZORDER)
@@ -274,35 +275,41 @@ void *free_user_handle( HANDLE handle, unsigned short type )
 static pthread_mutex_t surfaces_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct list client_surfaces = LIST_INIT( client_surfaces );
 
+static void client_surface_detach_locked( struct client_surface *surface )
+{
+    if (!surface->hwnd) return;
+
+    list_remove( &surface->entry );
+    surface->funcs->detach( surface );
+    surface->hwnd = NULL;
+}
+
+static void client_surface_release_locked( struct client_surface *surface )
+{
+    ULONG ref = InterlockedDecrement( &surface->ref );
+    TRACE( "%s decreasing refcount to %u\n", debugstr_client_surface( surface ), ref );
+
+    if (!ref)
+    {
+        client_surface_detach_locked( surface );
+        surface->funcs->destroy( surface );
+        free( surface );
+    }
+}
+
 void detach_client_surfaces( HWND hwnd )
 {
-    struct list detached = LIST_INIT( detached );
     struct client_surface *surface, *next;
 
     pthread_mutex_lock( &surfaces_lock );
 
     LIST_FOR_EACH_ENTRY_SAFE( surface, next, &client_surfaces, struct client_surface, entry )
-    {
-        if (surface->hwnd != hwnd) continue;
-
-        list_remove( &surface->entry );
-        list_add_tail( &detached, &surface->entry );
-        client_surface_add_ref( surface );
-
-        surface->funcs->detach( surface );
-        surface->hwnd = NULL;
-    }
+        if (surface->hwnd == hwnd) client_surface_detach_locked( surface );
 
     pthread_mutex_unlock( &surfaces_lock );
-
-    LIST_FOR_EACH_ENTRY_SAFE( surface, next, &detached, struct client_surface, entry )
-    {
-        list_remove( &surface->entry );
-        client_surface_release( surface );
-    }
 }
 
-static void update_client_surfaces( HWND hwnd )
+void update_client_surfaces( HWND hwnd )
 {
     struct client_surface *surface, *next;
 
@@ -340,22 +347,9 @@ void client_surface_add_ref( struct client_surface *surface )
 
 void client_surface_release( struct client_surface *surface )
 {
-    ULONG ref = InterlockedDecrement( &surface->ref );
-    TRACE( "%s decreasing refcount to %u\n", debugstr_client_surface( surface ), ref );
-
-    if (!ref)
-    {
-        pthread_mutex_lock( &surfaces_lock );
-        if (surface->hwnd)
-        {
-            surface->funcs->detach( surface );
-            list_remove( &surface->entry );
-        }
-        pthread_mutex_unlock( &surfaces_lock );
-
-        surface->funcs->destroy( surface );
-        free( surface );
-    }
+    pthread_mutex_lock( &surfaces_lock );
+    client_surface_release_locked( surface );
+    pthread_mutex_unlock( &surfaces_lock );
 }
 
 void client_surface_present( struct client_surface *surface )
@@ -383,6 +377,11 @@ void client_surface_update( struct client_surface *surface )
 void add_window_client_surface( HWND hwnd, struct client_surface *surface )
 {
     pthread_mutex_lock( &surfaces_lock );
+
+    /* a reused surface may still be linked under its previous window; hwnd is
+     * cleared on detach, so it is the membership test here (unlinking an entry
+     * left over from a detach can write into an already freed surface) */
+    if (surface->hwnd) list_remove( &surface->entry );
 
     surface->hwnd = hwnd;
     list_add_tail( &client_surfaces, &surface->entry );
@@ -954,7 +953,8 @@ BOOL is_window_visible( HWND hwnd )
     {
         for (i = 0; list[i+1]; i++)
             if (!(get_window_long( list[i], GWL_STYLE ) & WS_VISIBLE)) break;
-        retval = !list[i+1] && (list[i] == get_desktop_window());  /* top message window isn't visible */
+        /* top message window isn't visible */
+        retval = !list[i+1];
     }
     free( list );
     return retval;
@@ -983,7 +983,8 @@ BOOL is_window_drawable( HWND hwnd, BOOL icon )
         for (i = 0; list[i+1]; i++)
             if ((get_window_long( list[i], GWL_STYLE ) & (WS_VISIBLE|WS_MINIMIZE)) != WS_VISIBLE)
                 break;
-        retval = !list[i+1] && (list[i] == get_desktop_window());  /* top message window isn't visible */
+        /* top message window isn't visible */
+        retval = !list[i+1];
     }
     free( list );
     return retval;
@@ -2040,6 +2041,10 @@ static RECT get_visible_rect( HWND hwnd, BOOL shaped, UINT style, UINT ex_style,
     if (visible_rect.top >= visible_rect.bottom) visible_rect.bottom = visible_rect.top + 1;
     if (visible_rect.left >= visible_rect.right) visible_rect.right = visible_rect.left + 1;
 
+    /* fall back to the window rect if the client rect extends beyond the visible rect */
+    if (visible_rect.top > rects->client.top || visible_rect.bottom < rects->client.bottom) return rects->window;
+    if (visible_rect.left > rects->client.left || visible_rect.right < rects->client.right) return rects->window;
+
     TRACE( "hwnd %p, rects %s, style %#x, ex_style %#x -> visible_rect %s\n", hwnd,
            debugstr_window_rects( rects ), style, ex_style, wine_dbgstr_rect( &visible_rect ) );
     return visible_rect;
@@ -2162,7 +2167,8 @@ static struct window_surface *get_window_surface( HWND hwnd, UINT swp_flags, BOO
     if (IsRectEmpty( surface_rect )) needs_surface = FALSE;
     else if (create_layered || is_layered) needs_surface = TRUE;
 
-    if (needs_surface && !is_layered && !create_layered && window_clip_client_surfaces( hwnd )
+    /* At the present time, winewayland requires a toplevel surfaces for its client surfaces */
+    if (needs_surface && !is_layered && !create_layered && window_clip_client_surfaces( hwnd ) && user_driver->dc_funcs.pPutImage
         && !(!create_opaque && NtUserGetLayeredWindowAttributes( hwnd, NULL, NULL, &layered_flags ) && layered_flags & LWA_COLORKEY))
     {
         if (new_surface) window_surface_release( new_surface );
@@ -2215,6 +2221,19 @@ static BOOL is_fullscreen( const MONITORINFO *info, const RECT *rect )
            rect->top <= info->rcMonitor.top && rect->bottom >= info->rcMonitor.bottom;
 }
 
+static int use_move_hack(void)
+{
+    static volatile int enabled = -1;
+
+    if (enabled == -1)
+    {
+        const char *env = getenv("WINE_MOVE_HACK");
+        enabled = (env && !strcmp(env, "1"));
+    }
+
+    return enabled;
+}
+
 /***********************************************************************
  *           apply_window_pos
  *
@@ -2228,11 +2247,60 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
     HWND owner_hint, surface_win = 0, toplevel;
     UINT raw_dpi, monitor_dpi, dpi = get_thread_dpi();
     BOOL ret, is_layered, is_child, need_icons = FALSE;
-    struct window_rects old_rects;
+    struct window_rects old_rects, adjusted;
     RECT extra_rects[3];
     struct window_surface *old_surface;
     HICON icon, icon_small;
     ICONINFO ii, ii_small;
+
+    /* HACK: move windows within the virtual screen on winewayland */
+    if (use_move_hack())
+    {
+        RECT temp, *adj;
+        RECT virtual_screen = get_virtual_screen_rect( get_thread_dpi(), MDT_DEFAULT );
+
+        adjusted = *new_rects;
+        adj = &adjusted.client;
+
+        intersect_rect(&temp, &virtual_screen, adj);
+
+        /* we aren't off screen */
+        if (!IsRectEmpty(&temp))
+        {
+            LONG offset_x = 0, offset_y = 0;
+
+            if (adj->bottom - adj->top <=
+                virtual_screen.bottom - virtual_screen.top)
+            {
+                if (adj->bottom > virtual_screen.bottom)
+                    offset_y = virtual_screen.bottom - adj->bottom;
+                else if (virtual_screen.top > adj->top)
+                    offset_y = virtual_screen.top - adj->top;
+            }
+
+            if (adj->right - adj->left <=
+                virtual_screen.right - virtual_screen.left)
+            {
+                if (adj->right > virtual_screen.right)
+                    offset_x = virtual_screen.right - adj->right;
+                else if (virtual_screen.left > adj->left)
+                    offset_x = virtual_screen.left - adj->left;
+            }
+
+            OffsetRect(&adjusted.client, offset_x, offset_y);
+            OffsetRect(&adjusted.visible, offset_x, offset_y);
+            OffsetRect(&adjusted.window, offset_x, offset_y);
+
+            if (offset_x != 0 || offset_y != 0)
+            {
+                TRACE("vscreen rect %s\n", wine_dbgstr_rect(&virtual_screen));
+                TRACE("Original window rects: %s\n", debugstr_window_rects(new_rects));
+                TRACE("Adjusted window rects: %s\n", debugstr_window_rects(&adjusted));
+
+                new_rects = &adjusted;
+            }
+        }
+    }
 
     toplevel = NtUserGetAncestor( hwnd, GA_ROOT );
     is_layered = new_surface && new_surface->alpha_mask;
@@ -2397,8 +2465,14 @@ static BOOL apply_window_pos( HWND hwnd, HWND insert_after, UINT swp_flags, stru
 
         owner_hint = NtUserGetWindowRelative(hwnd, GW_OWNER);
         /* fallback to any window that is right below our top left corner */
-        if (!owner_hint) owner_hint = NtUserWindowFromPoint(new_rects->window.left - 1, new_rects->window.top - 1);
+        if (!owner_hint) owner_hint = NtUserWindowFromPoint(new_rects->window.left - 1, new_rects->window.top);
         if (owner_hint) owner_hint = NtUserGetAncestor(owner_hint, GA_ROOT);
+        /* GA_ROOT of desktop window is null */
+        if (!owner_hint)
+        {
+            owner_hint = NtUserWindowFromPoint(new_rects->window.left, new_rects->window.top - 1);
+            owner_hint = NtUserGetAncestor(owner_hint, GA_ROOT);
+        }
 
         user_driver->pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, &monitor_rects,
                                         get_driver_window_surface( new_surface, raw_dpi ) );
@@ -2438,7 +2512,7 @@ static BOOL expose_window_surface( HWND hwnd, UINT flags, const RECT *rect, UINT
         add_bounds_rect( &surface->bounds, &exposed_rect );
     }
     window_surface_unlock( surface );
-    if (surface->alpha_mask) window_surface_flush( surface );
+    window_surface_flush( surface );
     window_surface_release( surface );
     return TRUE;
 }
@@ -2563,6 +2637,30 @@ BOOL WINAPI NtUserGetLayeredWindowAttributes( HWND hwnd, COLORREF *key, BYTE *al
     SERVER_END_REQ;
 
     return ret;
+}
+
+static void fixup_chrome_webview_style( HWND hwnd, HWND toplevel, const UNICODE_STRING *class_name )
+{
+    static const WCHAR CefBrowserWindowW[] = u"CefBrowserWindow";
+    static int cached = -1;
+    static int once;
+
+    if (cached == -1)
+    {
+        const char *sgi = getenv( "SteamGameId" );
+        cached = sgi && !strcmp( sgi, "3513350" );
+    }
+
+    if (!cached || !toplevel || toplevel == hwnd || !class_name || IS_INTRESOURCE( class_name->Buffer ))
+        return;
+
+    if (class_name->Length != wcslen( CefBrowserWindowW ) * sizeof(WCHAR)
+        || memcmp( class_name->Buffer, CefBrowserWindowW, class_name->Length ))
+        return;
+
+    if (!once++)
+        FIXME( "HACK: forcing opaque chrome webview layered alpha.\n" );
+    NtUserSetLayeredWindowAttributes( toplevel, RGB(255, 255, 255), 255, LWA_ALPHA );
 }
 
 /*****************************************************************************
@@ -5374,6 +5472,7 @@ static void free_window_handle( HWND hwnd )
             set_user_handle_ptr( hwnd, NULL );
         }
         SERVER_END_REQ;
+        list_remove( &win->entry );
         user_unlock();
         free( win->pScroll );
         free( win->text );
@@ -5544,55 +5643,61 @@ BOOL WINAPI NtUserDestroyWindow( HWND hwnd )
     return user_destroy_window( hwnd, TRUE );
 }
 
+/* Detach the local object before releasing resources outside the USER lock. */
+static void detach_window_object( WND *win, struct list *windows, struct list *drawables )
+{
+    WORD index = USER_HANDLE_TO_INDEX( win->handle );
+
+    free_dce( win->dce, win->handle, drawables );
+    InterlockedCompareExchangePointer( &client_objects[index], NULL, win );
+    list_remove( &win->entry );
+    list_add_head( windows, &win->entry );
+}
+
+static void destroy_window_objects( struct list *windows, struct list *drawables )
+{
+    WND *win, *next;
+
+    release_opengl_drawables( drawables );
+    LIST_FOR_EACH_ENTRY_SAFE( win, next, windows, WND, entry )
+    {
+        TRACE( "destroying %p\n", win->handle );
+
+        list_remove( &win->entry );
+        detach_client_surfaces( win->handle );
+        user_driver->pDestroyWindow( win->handle );
+        if (win->current_drawable) opengl_drawable_release( win->current_drawable );
+        if (win->unused_drawable) opengl_drawable_release( win->unused_drawable );
+
+        if ((win->dwStyle & (WS_CHILD | WS_POPUP)) != WS_CHILD)
+            NtUserDestroyMenu( (HMENU)win->wIDmenu );
+        NtUserDestroyMenu( win->hSysMenu );
+        if (win->surface)
+        {
+            register_window_surface( win->surface, NULL );
+            window_surface_release( win->surface );
+        }
+        free( win->pScroll );
+        free( win->text );
+        free( win );
+    }
+}
+
 /*****************************************************************************
  *           destroy_thread_windows
  *
- * Destroy all window owned by the current thread.
+ * Destroy all windows owned by the current thread.
  */
 void destroy_thread_windows(void)
 {
-    struct destroy_entry
-    {
-        HWND handle;
-        HMENU menu;
-        HMENU sys_menu;
-        struct opengl_drawable *current_drawable;
-        struct opengl_drawable *unused_drawable;
-        struct window_surface *surface;
-        struct destroy_entry *next;
-    } *entry, *free_list = NULL;
-    struct list drawables = LIST_INIT(drawables);
+    struct list windows = LIST_INIT(windows), drawables = LIST_INIT(drawables);
     HANDLE handle = 0;
     WND *win;
 
-    /* recycle WND structs as destroy_entry structs */
-    C_ASSERT( sizeof(struct destroy_entry) <= sizeof(WND) );
-
     user_lock();
     while ((win = next_thread_user_object( GetCurrentThreadId(), &handle, NTUSER_OBJ_WINDOW )))
-    {
-        BOOL is_child = (win->dwStyle & (WS_CHILD | WS_POPUP)) == WS_CHILD;
-        struct destroy_entry tmp = {0};
-
-        free_dce( win->dce, win->handle, &drawables );
-        set_user_handle_ptr( handle, NULL );
-        free( win->pScroll );
-        free( win->text );
-
-        /* recycle the WND struct as a destroy_entry struct */
-        entry = (struct destroy_entry *)win;
-        tmp.handle = win->handle;
-        if (!is_child) tmp.menu = (HMENU)win->wIDmenu;
-        tmp.sys_menu = win->hSysMenu;
-        tmp.current_drawable = win->current_drawable;
-        tmp.unused_drawable = win->unused_drawable;
-        tmp.surface = win->surface;
-        *entry = tmp;
-
-        entry->next = free_list;
-        free_list = entry;
-    }
-    if (free_list)
+        detach_window_object( win, &windows, &drawables );
+    if (!list_empty( &windows ))
     {
         SERVER_START_REQ( destroy_window )
         {
@@ -5603,27 +5708,31 @@ void destroy_thread_windows(void)
     }
     user_unlock();
 
-    release_opengl_drawables( &drawables );
+    destroy_window_objects( &windows, &drawables );
+}
 
-    while ((entry = free_list))
+void destroy_abandoned_window( HWND hwnd )
+{
+    struct list windows = LIST_INIT(windows), drawables = LIST_INIT(drawables);
+    WND *win;
+
+    user_lock();
+    /* Server handles may already be reused; only take the exact old local
+     * object. Multiple GUI threads can receive the same notification. */
+    if (!is_window( hwnd ))
     {
-        free_list = entry->next;
-        TRACE( "destroying %p\n", entry );
-
-        detach_client_surfaces( entry->handle );
-        user_driver->pDestroyWindow( entry->handle );
-        if (entry->current_drawable) opengl_drawable_release( entry->current_drawable );
-        if (entry->unused_drawable) opengl_drawable_release( entry->unused_drawable );
-
-        NtUserDestroyMenu( entry->menu );
-        NtUserDestroyMenu( entry->sys_menu );
-        if (entry->surface)
+        LIST_FOR_EACH_ENTRY( win, &window_objects, WND, entry )
         {
-            register_window_surface( entry->surface, NULL );
-            window_surface_release( entry->surface );
+            if (win->handle != hwnd) continue;
+            detach_window_object( win, &windows, &drawables );
+            break;
         }
-        free( entry );
     }
+    user_unlock();
+
+    /* The thread's DLLs may already have been unloaded. No window procedure
+     * or DLL_THREAD_DETACH callback may be invoked here. */
+    destroy_window_objects( &windows, &drawables );
 }
 
 /***********************************************************************
@@ -5707,6 +5816,7 @@ static WND *create_window_handle( HWND parent, HWND owner, UNICODE_STRING *name,
     win->winproc    = get_class_winproc( class );
     win->hInstance  = instance;
     win->cbWndExtra = extra_bytes;
+    list_add_tail( &window_objects, &win->entry );
     set_user_handle_ptr( handle, win );
     if (is_winproc_unicode( win->winproc, !ansi )) win->flags |= WIN_ISUNICODE;
     return win;
@@ -6174,6 +6284,7 @@ HWND WINAPI NtUserCreateWindowEx( DWORD ex_style, UNICODE_STRING *class_name,
     set_thread_dpi_awareness_context( context );
 
     toplevel = NtUserGetAncestor( hwnd, GA_ROOT );
+    fixup_chrome_webview_style( hwnd, toplevel, class_name );
     if (toplevel && toplevel != hwnd) update_window_state( toplevel );
 
     return hwnd;
