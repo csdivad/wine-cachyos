@@ -475,6 +475,7 @@ extern BOOL use_egl;
 extern BOOL use_take_focus;
 extern BOOL use_primary_selection;
 extern BOOL use_system_cursors;
+extern BOOL keyboard_scancode_detect;
 extern BOOL grab_fullscreen;
 extern BOOL usexcomposite;
 extern BOOL use_xfixes;

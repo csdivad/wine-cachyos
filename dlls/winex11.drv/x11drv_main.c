@@ -76,6 +76,7 @@ BOOL use_primary_selection = FALSE;
 BOOL use_system_cursors = TRUE;
 BOOL grab_fullscreen = FALSE;
 BOOL managed_mode = TRUE;
+BOOL keyboard_scancode_detect = TRUE;
 BOOL private_color_map = FALSE;
 int primary_monitor = 0;
 BOOL client_side_graphics = TRUE;
@@ -582,6 +583,9 @@ static void setup_options(void)
     p = x11drv_get_keyboard_layout_list( &len );
     if (p) set_reg_string_value( hkey, "KeyboardLayoutList", p, len * sizeof(WCHAR) );
     free( p );
+
+    if (!get_config_key( hkey, appkey, "KeyboardScancodeDetect", buffer, sizeof(buffer) ))
+        keyboard_scancode_detect = IS_OPTION_TRUE( buffer[0] );
 
     if (!get_config_key( hkey, appkey, "ScreenDepth", buffer, sizeof(buffer) ))
         default_visual.depth = wcstol( buffer, NULL, 0 );
