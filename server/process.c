@@ -1058,6 +1058,13 @@ void remove_process_thread( struct process *process, struct thread *thread )
     assert( process->running_threads > 0 );
     assert( !list_empty( &process->thread_list ));
 
+    /* System threads must not keep a process alive after its final user thread
+     * exits. At this point every other running thread is a system thread. */
+    if (!thread->is_system && process->user_threads == 1)
+    {
+        terminate_process( process, thread, thread->exit_code );
+    }
+
     list_remove( &thread->proc_entry );
     if (!thread->is_system) process->user_threads--;
 
