@@ -57,6 +57,7 @@ struct _EPROCESS
     PROCESS_BASIC_INFORMATION info;
     KERNEL_USER_TIMES times;
     PEB32 *peb32;
+    DWORD_PTR debug_port;
     DWORD session_id;
     PACCESS_TOKEN token;
     char imageName[15];

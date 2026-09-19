@@ -2515,8 +2515,11 @@ static void *create_process_object( HANDLE handle )
     RtlFreeAnsiString(&fullImageNameA);
     free(fullImageNameW);
 
-    status = NtQueryInformationProcess( handle, ProcessWow64Information, &process->peb32, sizeof(process->peb32), 0);
+    status = NtQueryInformationProcess( handle, ProcessWow64Information, &process->peb32, sizeof(process->peb32), NULL );
     if (status) process->peb32 = NULL;
+
+    NtQueryInformationProcess( handle, ProcessDebugPort, &process->debug_port, sizeof(process->debug_port), NULL );
+    if (status) process->debug_port = 0;
 
     NtOpenProcessToken( handle, TOKEN_ALL_ACCESS, &token );
     ObReferenceObjectByHandle( token, 0, SeTokenObjectType, KernelMode, &process->token, NULL );
@@ -2645,6 +2648,15 @@ PACCESS_TOKEN WINAPI PsReferencePrimaryToken( PEPROCESS process )
     TRACE("%p -> %p\n", process, process->token);
     ObReferenceObject(process->token);
     return process->token;
+}
+
+/*********************************************************************
+ *           PsGetProcessDebugPort    (NTOSKRNL.@)
+ */
+DWORD_PTR WINAPI PsGetProcessDebugPort( PEPROCESS process )
+{
+    TRACE("%p\n", process);
+    return process->debug_port;
 }
 
 /*********************************************************************
