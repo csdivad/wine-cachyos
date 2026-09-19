@@ -381,6 +381,7 @@ struct vulkan_funcs
     PFN_vkReleaseSwapchainImagesEXT p_vkReleaseSwapchainImagesEXT;
     PFN_vkReleaseSwapchainImagesKHR p_vkReleaseSwapchainImagesKHR;
     PFN_vkSetHdrMetadataEXT p_vkSetHdrMetadataEXT;
+    PFN_vkSetLatencyMarkerNV p_vkSetLatencyMarkerNV;
     PFN_vkSetSwapchainPresentTimingQueueSizeEXT p_vkSetSwapchainPresentTimingQueueSizeEXT;
     PFN_vkSetLatencySleepModeNV p_vkSetLatencySleepModeNV;
     PFN_vkQueueSubmit p_vkQueueSubmit;
