@@ -1331,6 +1331,19 @@ static BOOL wayland_surface_reconfigure_xdg(struct wayland_surface *surface, REC
         if (surface->current.serial > surface->processing.serial)
             memset(&surface->processing, 0, sizeof(surface->processing));
         xdg_surface_ack_configure(surface->xdg_surface, surface->current.serial);
+
+        /* Acking a fullscreen configure from the requested state bypasses
+         * wayland_configure_window(), so the Win32 client
+         * rect is not recomputed for the transition. Applications that
+         * removed their frame styles before entering the state keep the
+         * stale frame insets in the client rect, and exclusive-fullscreen
+         * apps size their swapchain against a framed client (Black Desert
+         * Online, GE issue 721). Ask the window thread to refresh it with
+         * a geometry-neutral frame-changed update; it stays quiet when the
+         * client rect already matches.
+         */
+        if (surface->current.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN)
+            NtUserPostMessage(surface->hwnd, WM_WAYLAND_RECALC_CLIENT_RECT, 0, 0);
     }
     else if (!surface->current.serial ||
              !wayland_surface_config_is_compatible(&surface->current, rect,

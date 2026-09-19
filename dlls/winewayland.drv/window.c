@@ -1097,3 +1097,56 @@ void wayland_window_init(void)
     pthread_mutex_init(&win_data_mutex, &attr);
     pthread_mutexattr_destroy(&attr);
 }
+    case WM_WAYLAND_RECALC_CLIENT_RECT:
+    {
+        struct wayland_win_data *data;
+        struct wayland_surface *surface;
+        RECT window, expected, client;
+        static const RECT empty_rect;
+        DWORD style;
+        UINT dpi;
+        BOOL fullscreen = FALSE;
+
+        if ((data = wayland_win_data_get(hwnd)))
+        {
+            surface = data->wayland_surface;
+            fullscreen = surface && wayland_surface_is_toplevel(surface) &&
+                         (surface->current.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN);
+            wayland_win_data_release(data);
+        }
+        if (!fullscreen) return 0;
+
+        /* This repair is for borderless fullscreen windows. In particular,
+         * do not send a synthetic non-client transition to ordinary
+         * maximized launchers. */
+        style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+        if (style & (WS_MINIMIZE | WS_CAPTION | WS_THICKFRAME)) return 0;
+
+        /* Use live Win32 geometry rather than the cached Wayland window rect:
+         * the latter is populated from the same transition whose stale
+         * non-client metrics this message is repairing. */
+        dpi = NtUserGetDpiForWindow(hwnd);
+        if (!NtUserGetWindowRect(hwnd, &window, dpi) ||
+            !NtUserGetClientRect(hwnd, &client, dpi))
+            return 0;
+        SetRect(&expected, 0, 0, window.right - window.left,
+                window.bottom - window.top);
+        if (IsRectEmpty(&expected)) return 0;
+        if (EqualRect(&client, &expected)) return 0;
+
+        /* The posted message may outlive the configure that queued it. Do not
+         * repair a window that left fullscreen while it was pending. */
+        if (!(data = wayland_win_data_get(hwnd))) return 0;
+        surface = data->wayland_surface;
+        fullscreen = surface && wayland_surface_is_toplevel(surface) &&
+                     (surface->current.state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN);
+        wayland_win_data_release(data);
+        if (!fullscreen) return 0;
+
+        TRACE("hwnd=%p client %s -> %s\n", hwnd, wine_dbgstr_rect(&client),
+              wine_dbgstr_rect(&expected));
+        NtUserSetRawWindowPos(hwnd, empty_rect, SWP_NOSIZE | SWP_NOMOVE |
+                              SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER |
+                              SWP_FRAMECHANGED | SWP_NOSENDCHANGING, FALSE);
+        return 0;
+    }
