@@ -3456,6 +3456,34 @@ static VkResult win32u_vkCreateSwapchainKHR( VkDevice client_device, const VkSwa
                create_info_host.minImageCount, capabilities.minImageCount );
     }
 
+    /* Hades indexes three-entry command-pool arrays with the acquired image.
+     * Use per-mode limits instead of Wayland's conservative legacy minimum,
+     * and declare the mode to prevent an implicit MAILBOX image-count bump. */
+    if (device->extensions.has_VK_EXT_swapchain_maintenance1 &&
+        !find_next_struct( create_info_host.pNext, VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT ) &&
+        use_hades_present_modes( physical_device ))
+    {
+        VkPresentModeKHR mode = create_info_host.presentMode;
+        BOOL supported = get_hades_surface_capabilities( physical_device, surface, mode, &capabilities );
+
+        if (!supported)
+        {
+            mode = VK_PRESENT_MODE_FIFO_KHR;
+            supported = get_hades_surface_capabilities( physical_device, surface, mode, &capabilities );
+        }
+        if (supported)
+        {
+            create_info_host.presentMode = mode;
+            create_info_host.minImageCount = 3;
+            present_modes.presentModeCount = 1;
+            present_modes.pPresentModes = &create_info_host.presentMode;
+            present_modes.pNext = create_info_host.pNext;
+            create_info_host.pNext = &present_modes;
+            TRACE( "Hades host swapchain: 3 images, present mode %u (requested %u)\n",
+                   create_info_host.presentMode, create_info->presentMode );
+        }
+    }
+
     /* If the swapchain image size is not equal to the presentation size (e.g. because of DPI virtualization or
      * display mode change emulation), MoltenVK's vkQueuePresentKHR returns VK_SUBOPTIMAL_KHR.
      * Create the swapchain with VkSwapchainPresentScalingCreateInfoEXT to avoid this.
@@ -3608,34 +3636,6 @@ void win32u_vkDestroySwapchainKHR( VkDevice client_device, VkSwapchainKHR client
         destroy_pipeline(device, &swapchain->blit_pipeline);
         destroy_pipeline(device, &swapchain->fsr_easu_pipeline);
         destroy_pipeline(device, &swapchain->fsr_rcas_pipeline);
-    /* Hades indexes three-entry command-pool arrays with the acquired image.
-     * Use per-mode limits instead of Wayland's conservative legacy minimum,
-     * and declare the mode to prevent an implicit MAILBOX image-count bump. */
-    if (device->extensions.has_VK_EXT_swapchain_maintenance1 &&
-        !find_next_struct( create_info_host.pNext, VK_STRUCTURE_TYPE_SWAPCHAIN_PRESENT_MODES_CREATE_INFO_EXT ) &&
-        use_hades_present_modes( physical_device ))
-    {
-        VkPresentModeKHR mode = create_info_host.presentMode;
-        BOOL supported = get_hades_surface_capabilities( physical_device, surface, mode, &capabilities );
-
-        if (!supported)
-        {
-            mode = VK_PRESENT_MODE_FIFO_KHR;
-            supported = get_hades_surface_capabilities( physical_device, surface, mode, &capabilities );
-        }
-        if (supported)
-        {
-            create_info_host.presentMode = mode;
-            create_info_host.minImageCount = 3;
-            present_modes.presentModeCount = 1;
-            present_modes.pPresentModes = &create_info_host.presentMode;
-            present_modes.pNext = create_info_host.pNext;
-            create_info_host.pNext = &present_modes;
-            TRACE( "Hades host swapchain: 3 images, present mode %u (requested %u)\n",
-                   create_info_host.presentMode, create_info->presentMode );
-        }
-    }
-
         device->p_vkDestroyDescriptorSetLayout( device->host.device, swapchain->descriptor_set_layout, NULL );
         device->p_vkDestroyDescriptorPool( device->host.device, swapchain->descriptor_pool, NULL );
         device->p_vkDestroySampler( device->host.device, swapchain->sampler, NULL );
