@@ -965,8 +965,16 @@ BOOL WAYLAND_GetWindowStateUpdates(HWND hwnd, UINT *state_cmd, UINT *swp_flags,
                                    RECT *rect, HWND *foreground)
 {
     struct wayland_keyboard *keyboard = &process_wayland.keyboard;
-    DWORD style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
-    HWND focused_hwnd, old_foreground = NtUserGetForegroundWindow();
+    DWORD style;
+    HWND focused_hwnd, old_foreground;
+
+    /* win32u uses a second call with NULL outputs to release any host state
+     * lock acquired by the first call. Wine-Wayland does not acquire one. */
+    if (!state_cmd)
+        return FALSE;
+
+    style = NtUserGetWindowLongW(hwnd, GWL_STYLE);
+    old_foreground = NtUserGetForegroundWindow();
 
     /* in these cases we dont need to update the window focus, borrowed from winemac */
     if (!(style & WS_VISIBLE)) return FALSE;
