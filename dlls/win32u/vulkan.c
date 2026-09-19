@@ -4056,7 +4056,7 @@ static VkResult win32u_vkReleaseSwapchainImagesEXT( VkDevice client_device,
     struct swapchain *swapchain = swapchain_from_handle( release_info->swapchain );
     VkReleaseSwapchainImagesInfoKHR release_info_host = *release_info;
 
-    if (!swapchain) return VK_ERROR_UNKNOWN;
+    if (!swapchain) return VK_ERROR_OUT_OF_DATE_KHR;
 
     if (swapchain->managed) return managed_release_swapchain_images( swapchain, release_info );
 
