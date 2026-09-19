@@ -56,7 +56,7 @@ struct _EPROCESS
     DISPATCHER_HEADER header;
     PROCESS_BASIC_INFORMATION info;
     KERNEL_USER_TIMES times;
-    BOOL wow64;
+    PEB32 *peb32;
     DWORD session_id;
     PACCESS_TOKEN token;
     char imageName[15];
