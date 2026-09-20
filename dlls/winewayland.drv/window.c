@@ -169,6 +169,12 @@ static void wayland_win_data_get_config(struct wayland_win_data *data,
         window_state |= WAYLAND_SURFACE_CONFIG_STATE_MAXIMIZED;
     }
 
+    /* A frame removal and fullscreen resize may arrive in separate WindowPos
+     * updates, leaving the cached client rect with the old frame insets. */
+    if ((window_state & WAYLAND_SURFACE_CONFIG_STATE_FULLSCREEN) &&
+        !(style & (WS_CAPTION | WS_THICKFRAME)))
+        conf->client_rect = conf->rect;
+
     conf->resizeable = data->resizeable;
     conf->state = window_state;
     conf->managed = data->managed;
