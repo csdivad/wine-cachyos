@@ -405,9 +405,9 @@ BOOL WINAPI GetColorProfileFromHandle( HPROFILE handle, PBYTE buffer, PDWORD siz
     }
     get_profile_header( profile, &header );
 
-    if (!buffer || header.phSize > *size)
+    if (!buffer || profile->size > *size)
     {
-        *size = header.phSize;
+        *size = profile->size;
         release_object( &profile->hdr );
         return FALSE;
     }
@@ -1525,4 +1525,14 @@ HPROFILE WINAPI WcsOpenColorProfileW( PROFILE *cdm, PROFILE *camp, PROFILE *gmmp
     FIXME("no support for WCS profiles\n" );
 
     return OpenColorProfileW( cdm, access, sharing, creation );
+}
+
+/******************************************************************************
+ * WcsCreateIccProfile                [MSCMS.@]
+ */
+HPROFILE WINAPI WcsCreateIccProfile( HPROFILE profile, DWORD options )
+{
+    FIXME( "%p, %#lx stub!\n", profile, options );
+
+    return NULL;
 }

@@ -149,6 +149,8 @@ static D3DX10_SPRITE * d3dx10_sprite_draw_batch(struct d3dx10_sprite *sprite,
     D3DX10_SPRITE *ptr, *start_sprite;
     unsigned int i, start;
 
+    if (!count) return sprites;
+
     for (i = 0; i < count; ++i, v += 4)
     {
         ptr = d3dx10_get_sprite_ptr(sprites, i, stride);
@@ -177,14 +179,18 @@ static D3DX10_SPRITE * d3dx10_sprite_draw_batch(struct d3dx10_sprite *sprite,
     {
         ptr = d3dx10_get_sprite_ptr(sprites, i, stride);
 
-        if (ptr->pTexture != start_sprite->pTexture || i == count - 1)
+        /* flush the group of sprites that share the current texture */
+        if (ptr->pTexture != start_sprite->pTexture)
         {
             ID3D10Device_PSSetShaderResources(sprite->device, 0, 1, &start_sprite->pTexture);
-            ID3D10Device_DrawIndexed(sprite->device, (i - start + 1) * 6, start * 6, 0);
+            ID3D10Device_DrawIndexed(sprite->device, (i - start) * 6, start * 6, 0);
             start_sprite = ptr;
             start = i;
         }
     }
+
+    ID3D10Device_PSSetShaderResources(sprite->device, 0, 1, &start_sprite->pTexture);
+    ID3D10Device_DrawIndexed(sprite->device, (count - start) * 6, start * 6, 0);
 
     return d3dx10_get_sprite_ptr(sprites, count, stride);
 }
@@ -347,9 +353,6 @@ static HRESULT WINAPI d3dx10_sprite_DrawSpritesImmediate(ID3DX10Sprite *iface,
 
     TRACE("iface %p, sprites %p, count %u, size %u, flags %#x.\n",
             iface, sprites, count, size, flags);
-
-    if (!(sprite->flags & D3DX10_SPRITE_READY))
-        return E_FAIL;
 
     d3dx10_sprite_draw(sprite, sprites, count, size);
 

@@ -29,6 +29,8 @@
 #include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define GLIB_VERSION_MIN_REQUIRED GLIB_VERSION_2_30
 #include <gst/gst.h>
@@ -108,7 +110,7 @@ struct wg_parser
     bool use_opengl;
     GstContext *context;
 };
-static const unsigned int input_cache_chunk_size = 512 << 10;
+static const unsigned int input_cache_chunk_size = 256 << 10;
 
 struct wg_parser_stream
 {
@@ -271,6 +273,7 @@ static NTSTATUS wg_parser_stream_enable(void *args)
     struct wg_parser_stream *stream = get_stream(params->stream);
     const struct wg_format *format = params->format;
     struct wg_parser *parser = stream->parser;
+    const char *orientation = getenv("PROTON_GST_VIDEO_ORIENTATION");
 
     pthread_mutex_lock(&parser->mutex);
 
@@ -284,6 +287,13 @@ static NTSTATUS wg_parser_stream_enable(void *args)
         bool flip = (format->u.video.height < 0);
 
         gst_util_set_object_arg(G_OBJECT(stream->flip), "method", flip ? "vertical-flip" : "none");
+    }
+
+    /* Proton override: if PROTON_GST_VIDEO_ORIENTATION is set then manually set orientation based on value */
+    if (format->major_type == WG_MAJOR_TYPE_VIDEO && orientation)
+    {
+        GST_INFO("Manual video orientation: %s.", orientation);
+        gst_util_set_object_arg(G_OBJECT(stream->flip), "method", orientation);
     }
 
     push_event(stream->my_sink, gst_event_new_reconfigure());
@@ -1108,6 +1118,12 @@ static void free_stream(struct wg_parser_stream *stream)
         if (stream->tags[i])
             g_free(stream->tags[i]);
     }
+
+    if (stream->codec_caps)
+        gst_caps_unref(stream->codec_caps);
+    if (stream->current_caps)
+        gst_caps_unref(stream->current_caps);
+
     free(stream);
 }
 
@@ -1530,9 +1546,6 @@ static GstFlowReturn src_getrange_cb(GstPad *pad, GstObject *parent,
         GST_LOG("Returning empty buffer.");
         return GST_FLOW_OK;
     }
-
-    if (size >= input_cache_chunk_size || sizeof(void*) == 4)
-        return issue_read_request(parser, offset, size, buffer);
 
     if (offset >= parser->file_size)
         return GST_FLOW_EOS;

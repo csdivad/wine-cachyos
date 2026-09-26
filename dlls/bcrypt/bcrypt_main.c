@@ -1481,7 +1481,8 @@ static NTSTATUS key_import( struct algorithm *alg, struct key *decrypt_key, cons
         if (!decrypt_key || input_len < 8) return STATUS_INVALID_PARAMETER;
 
         len = input_len - 8;
-        if (len < BLOCK_LENGTH_AES || len & (BLOCK_LENGTH_AES - 1)) return STATUS_INVALID_PARAMETER;
+        if (len < BLOCK_LENGTH_AES || len > sizeof(output) || len & (BLOCK_LENGTH_AES - 1))
+            return STATUS_INVALID_PARAMETER;
 
         if ((status = aes_unwrap( decrypt_key->u.s.secret, decrypt_key->u.s.secret_len, input, len, output )))
             return status;

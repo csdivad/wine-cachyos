@@ -589,14 +589,16 @@ static inline void remove_epoll_user( struct fd *fd, int user )
     }
 }
 
+__attribute__((weak)) int epoll_pwait2( int, struct epoll_event *, int, const struct timespec *, const sigset_t * );
+
 static inline void main_loop_epoll(void)
 {
     int i, ret, timeout;
     struct timespec ts;
     struct epoll_event events[128];
-#ifdef HAVE_EPOLL_PWAIT2
-    static int failed_epoll_pwait2 = 0;
-#endif
+    int use_epoll_pwait2 = !!epoll_pwait2;
+    if (use_epoll_pwait2 && epoll_pwait2( -1, events, 0, NULL, NULL ) == -1 && errno == ENOSYS)
+        use_epoll_pwait2 = 0;
 
     assert( POLLIN == EPOLLIN );
     assert( POLLOUT == EPOLLOUT );
@@ -612,16 +614,8 @@ static inline void main_loop_epoll(void)
         if (!active_users) break;  /* last user removed by a timeout */
         if (epoll_fd == -1) break;  /* an error occurred with epoll */
 
-#ifdef HAVE_EPOLL_PWAIT2
-        if (!failed_epoll_pwait2)
-        {
-            ret = epoll_pwait2( epoll_fd, events, ARRAY_SIZE( events ), timeout == -1 ? NULL : &ts, NULL );
-            if (ret == -1 && errno == ENOSYS)
-                failed_epoll_pwait2 = 1;
-        }
-        if (failed_epoll_pwait2)
-#endif
-            ret = epoll_wait( epoll_fd, events, ARRAY_SIZE( events ), timeout );
+        if (use_epoll_pwait2) ret = epoll_pwait2( epoll_fd, events, ARRAY_SIZE( events ), timeout == -1 ? NULL : &ts, NULL );
+        else ret = epoll_wait( epoll_fd, events, ARRAY_SIZE( events ), timeout );
 
         set_current_time();
 
@@ -1996,6 +1990,19 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
                 fd->unix_fd = open( name, O_RDONLY | (flags & ~(O_TRUNC | O_CREAT | O_EXCL)), *mode );
         }
 
+        /* POSIX requires that open(2) throws EOPNOTSUPP when `path` is a Unix
+         * socket. *BSD throws EOPNOTSUPP in this case and the additional case of
+         * O_SHLOCK or O_EXLOCK being passed when `path` resides on a filesystem
+         * without lock support.
+         *
+         * Contrary to POSIX, Linux returns ENXIO in this case, so we also check
+         * that error code here. */
+        if (errno == EOPNOTSUPP || errno == ENXIO)
+        {
+            if (!stat(name, &st) && S_ISSOCK(st.st_mode) && (options & FILE_DELETE_ON_CLOSE))
+                goto skip_open_fail;
+        }
+
         if (fd->unix_fd == -1)
         {
             /* check for trailing slash on file path */
@@ -2007,13 +2014,24 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
         }
     }
 
+skip_open_fail:
     fd->nt_name = dup_nt_name( root, nt_name, &fd->nt_namelen );
     fd->unix_name = NULL;
-    fstat( fd->unix_fd, &st );
+    if ((path = dup_fd_name( root, name )))
+    {
+        fd->unix_name = realpath( path, NULL );
+        free( path );
+    }
+
+    closed_fd->unix_fd = fd->unix_fd;
+    closed_fd->disp_flags = 0;
+    closed_fd->unix_name = fd->unix_name;
+    if (fd->unix_fd != -1)
+        fstat( fd->unix_fd, &st );
     *mode = st.st_mode;
 
-    /* only bother with an inode for normal files and directories */
-    if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode))
+    /* only bother with an inode for normal files, directories, and socket files */
+    if (S_ISREG(st.st_mode) || S_ISDIR(st.st_mode) || S_ISSOCK(st.st_mode))
     {
         unsigned int err;
         struct inode *inode = get_inode( st.st_dev, st.st_ino, fd->unix_fd );

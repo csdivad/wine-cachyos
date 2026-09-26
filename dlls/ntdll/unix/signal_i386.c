@@ -2141,16 +2141,24 @@ static void fpe_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         rec.ExceptionAddress = (void *)xcontext.c.FloatSave.ErrorOffset;
         break;
     case TRAP_x86_CACHEFLT:  /* SIMD exception */
-        /* TODO:
-         * Behaviour only tested for divide-by-zero exceptions
-         * Check for other SIMD exceptions as well */
-        if(siginfo->si_code != FPE_FLTDIV && siginfo->si_code != FPE_FLTINV)
-            FIXME("untested SIMD exception: %#x. Might not work correctly\n",
-                  siginfo->si_code);
-
-        rec.ExceptionCode = STATUS_FLOAT_MULTIPLE_TRAPS;
         rec.ExceptionInformation[rec.NumberParameters++] = 0;
         if (is_old_wow64()) rec.ExceptionInformation[rec.NumberParameters++] = ((XSAVE_FORMAT *)xcontext.c.ExtendedRegisters)->MxCsr;
+        switch (siginfo->si_code)
+        {
+        case FPE_FLTDIV:
+        case FPE_FLTINV:
+            rec.ExceptionCode = STATUS_FLOAT_MULTIPLE_TRAPS;
+            break;
+        case FPE_FLTOVF:
+        case FPE_FLTUND:
+        case FPE_FLTRES:
+            rec.ExceptionCode = STATUS_FLOAT_MULTIPLE_FAULTS;
+            break;
+        default:
+            FIXME("unknown SIMD exception: %#x\n", siginfo->si_code);
+            rec.ExceptionCode = STATUS_FLOAT_MULTIPLE_TRAPS;
+            break;
+        }
         break;
     default:
         WINE_ERR( "Got unexpected trap %d\n", TRAP_sig(ucontext) );
@@ -2201,7 +2209,8 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     ucontext_t *ucontext = sigcontext;
 
     init_handler( sigcontext );
-    if (!is_inside_syscall( ESP_sig(ucontext) )) user_mode_abort_thread( 0, get_syscall_frame() );
+    if (!ntdll_get_thread_data()->system_thread && !is_inside_syscall( ESP_sig(ucontext) ))
+        user_mode_abort_thread( 0, get_syscall_frame() );
     abort_thread( 0 );
 }
 
@@ -2217,7 +2226,11 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 
     init_handler( sigcontext );
 
-    if (is_inside_syscall( ESP_sig(ucontext) ))
+    if (ntdll_get_thread_data()->system_thread)
+    {
+        server_select( NULL, 0, SELECT_INTERRUPTIBLE, 0, NULL, NULL );
+    }
+    else if (is_inside_syscall( ESP_sig(ucontext) ))
     {
         struct syscall_frame *frame = get_syscall_frame();
         ULONG64 saved_compaction = 0;
@@ -2411,6 +2424,11 @@ NTSTATUS signal_alloc_thread( TEB *teb )
     }
     else thread_data->fs = gdt_fs_sel;
 
+    /* libc TLS selector, same GDT slot in every thread.  signal_init_thread
+     * refreshes it for normal threads; system threads never run it, and
+     * init_handler would load gs=0 and break libc TLS in signal handlers. */
+    thread_data->gs = get_gs();
+
     teb->WOW32Reserved = __wine_syscall_dispatcher;
     thread_data->frame_size = frame_size;
     return STATUS_SUCCESS;
@@ -2484,7 +2502,7 @@ void signal_init_process(void)
 /***********************************************************************
  *           init_syscall_frame
  */
-void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, TEB *teb )
+__attribute__((used)) void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, TEB *teb )
 {
     struct x86_thread_data *thread_data = (struct x86_thread_data *)&teb->GdiTebBatch;
     struct syscall_frame *frame = ((struct ntdll_thread_data *)&teb->GdiTebBatch)->syscall_frame;

@@ -116,6 +116,7 @@ struct ntdll_thread_data
     PRTL_THREAD_START_ROUTINE start;         /* thread entry point */
     void                     *param;         /* thread entry point parameter */
     void                     *jmp_buf;       /* setjmp buffer for exception handling */
+    BOOL                      system_thread; /* thread runs only on the Unix side */
     int                      *fsync_apc_futex;
 };
 
@@ -147,7 +148,6 @@ struct async_fileio
 {
     async_callback_t    *callback;
     struct async_fileio *next;
-    HANDLE               handle;
 };
 
 static const SIZE_T page_size = 0x1000;
@@ -209,6 +209,7 @@ extern pthread_mutex_t fd_cache_mutex;
 extern struct _KUSER_SHARED_DATA *user_shared_data;
 extern ULONG process_cookie;
 
+extern BOOL disable_sfn;
 extern BOOL process_termination_delay;
 extern BOOL fsync_help_simulated_pulse;
 extern BOOL localsystem_sid;
@@ -380,7 +381,7 @@ extern NTSTATUS tape_DeviceIoControl( HANDLE device, HANDLE event, PIO_APC_ROUTI
                                       IO_STATUS_BLOCK *io, UINT code, void *in_buffer,
                                       UINT in_size, void *out_buffer, UINT out_size );
 
-extern struct async_fileio *alloc_fileio( DWORD size, async_callback_t callback, HANDLE handle );
+extern struct async_fileio *alloc_fileio( DWORD size, async_callback_t callback );
 extern void release_fileio( struct async_fileio *io );
 extern NTSTATUS errno_to_status( int err );
 extern NTSTATUS get_nt_and_unix_names( OBJECT_ATTRIBUTES *attr, UNICODE_STRING *nt_name,

@@ -117,7 +117,11 @@ void *opengl_drawable_create( UINT size, const struct opengl_drawable_funcs *fun
     drawable->interval = INT_MIN;
     drawable->doublebuffer = !!(pixel_formats[format - 1].pfd.dwFlags & PFD_DOUBLEBUFFER);
     drawable->stereo = !!(pixel_formats[format - 1].pfd.dwFlags & PFD_STEREO);
-    if ((drawable->client = client)) client_surface_add_ref( client );
+    if ((drawable->client = client))
+    {
+        client_surface_add_ref( client );
+        InterlockedIncrement( &client->busy_ref );
+    }
     for (UINT i = 0; i < ARRAY_SIZE(drawable->buffer_map); i++) drawable->buffer_map[i] = GL_FRONT_LEFT + i;
 
     TRACE( "created %s\n", debugstr_opengl_drawable( drawable ) );
@@ -142,7 +146,11 @@ void opengl_drawable_release( struct opengl_drawable *drawable )
 
         drawable->funcs->destroy( drawable );
         if (drawable->surface) funcs->p_eglDestroySurface( egl->display, drawable->surface );
-        if (drawable->client) client_surface_release( drawable->client );
+        if (drawable->client)
+        {
+            InterlockedDecrement( &drawable->client->busy_ref );
+            client_surface_release( drawable->client );
+        }
         free( drawable );
     }
 }
@@ -1205,7 +1213,7 @@ static BOOL egldrv_describe_pixel_format( int format, struct wgl_pixel_format *d
     struct egl_platform *egl = &display_egl;
     int count = egl->config_count;
 
-    if (--format < 0 || format > ARRAY_SIZE(pixel_format_flags) * count) return FALSE;
+    if (--format < 0 || format >= ARRAY_SIZE(pixel_format_flags) * count) return FALSE;
     return describe_egl_config( egl->configs[format % count], desc, pixel_format_flags[format / count] );
 }
 
@@ -1677,6 +1685,17 @@ static void init_device_info( struct egl_platform *egl, const struct opengl_func
     funcs->p_eglGetConfigs( egl->display, &config, 1, &count );
     if (!count) config = EGL_NO_CONFIG_KHR;
 
+    if (!(context = funcs->p_eglCreateContext( egl->display, config, EGL_NO_CONTEXT, NULL )))
+    {
+        WARN( "Unable to create a context, ignoring device\n" );
+        funcs->p_eglTerminate( egl->display );
+        list_remove( &egl->entry );
+        free( egl );
+        return;
+    }
+    funcs->p_eglDestroyContext( egl->display, context );
+    context = EGL_NO_CONTEXT;
+
     for (i = 0; i < ARRAY_SIZE(versions) && (!egl->core_version || !egl->compat_version); i++)
     {
         int context_attribs[] =
@@ -1923,8 +1942,11 @@ static void set_window_opengl_drawable( HWND hwnd, struct opengl_drawable *new_d
     if ((win = get_win_ptr( hwnd )) && win != WND_DESKTOP && win != WND_OTHER_PROCESS)
     {
         struct opengl_drawable **ptr = current ? &win->current_drawable : &win->unused_drawable;
-        old_drawable = *ptr;
-        if ((*ptr = new_drawable)) opengl_drawable_add_ref( new_drawable );
+        if (*ptr != new_drawable)
+        {
+            old_drawable = *ptr;
+            if ((*ptr = new_drawable)) opengl_drawable_add_ref( new_drawable );
+        }
         release_win_ptr( win );
     }
 
@@ -2285,12 +2307,44 @@ static struct opengl_drawable *get_updated_drawable( HDC hdc, int format, struct
     return get_window_unused_drawable( hwnd, format );
 }
 
+static BOOL context_drawable_is_current( struct opengl_drawable *drawable )
+{
+    HWND hwnd;
+
+    if (!drawable || !drawable->client) return FALSE;
+    if (!(hwnd = drawable->client->hwnd)) return FALSE;
+    return is_client_surface_window( drawable->client, hwnd ) && !needs_framebuffer_update( hwnd, drawable );
+}
+
+static BOOL context_drawables_are_current( struct wgl_context *context )
+{
+    if (!context_drawable_is_current( context->draw )) return FALSE;
+    return context->read == context->draw || context_drawable_is_current( context->read );
+}
+
+static BOOL context_drawable_has_pending_update( struct opengl_drawable *drawable )
+{
+    return drawable && drawable->client && InterlockedCompareExchange( &drawable->client->updated, 0, 0 );
+}
+
+static BOOL context_flush_is_noop( struct wgl_context *context, void (*flush)(void), UINT flags )
+{
+    if (flush || flags) return FALSE;
+    if (NtCurrentTeb()->glContext != context) return FALSE;
+    if (!context_drawables_are_current( context )) return FALSE;
+    if (context_drawable_has_pending_update( context->draw )) return FALSE;
+    return context->read == context->draw || !context_drawable_has_pending_update( context->read );
+}
+
 static BOOL context_sync_drawables( struct wgl_context *context, HDC draw_hdc, HDC read_hdc )
 {
     struct opengl_drawable *new_draw, *new_read, *old_draw = NULL, *old_read = NULL, *draw, *read;
     static pthread_mutex_t reserved_tx_mutex = PTHREAD_MUTEX_INITIALIZER;
     struct wgl_context *previous = NtCurrentTeb()->glContext;
     BOOL ret = FALSE, draw_updated, read_updated;
+
+    if (!draw_hdc && !read_hdc && previous == context && context_drawables_are_current( context ))
+        return TRUE;
 
     if (!(new_draw = get_updated_drawable( draw_hdc, context->format, context->draw, &draw_updated ))) return FALSE;
     read_updated = draw_updated;
@@ -2972,6 +3026,10 @@ static BOOL win32u_wgl_context_flush( struct wgl_context *context, void (*flush)
     int interval;
 
     if (!draw->client) return flush_memory_pbuffer( flush );
+
+    /* No-op flushes cannot present. Real swaps apply interval changes. */
+    if (context_flush_is_noop( context, flush, flags )) return TRUE;
+
     interval = get_window_swap_interval( draw->client->hwnd );
     if (flags & GL_FLUSH_FORCE_SWAP) interval = 0;
 
@@ -3111,7 +3169,7 @@ static BOOL query_renderer_integer( struct egl_platform *egl, GLenum attribute, 
     case WGL_RENDERER_DEVICE_ID_WINE: *value = egl->device_id; return TRUE;
     case WGL_RENDERER_VENDOR_ID_WINE: *value = egl->vendor_id; return TRUE;
     case WGL_RENDERER_UNIFIED_MEMORY_ARCHITECTURE_WINE: *value = 0; return TRUE;
-    case WGL_RENDERER_VERSION_WINE: memcpy( value, egl->version, 3 ); return TRUE;
+    case WGL_RENDERER_VERSION_WINE: memcpy( value, egl->version, sizeof(egl->version) ); return TRUE;
     case WGL_RENDERER_OPENGL_COMPATIBILITY_PROFILE_VERSION_WINE:
         value[0] = egl->compat_version / 10;
         value[1] = egl->compat_version % 10;
@@ -3308,7 +3366,7 @@ void win32u_glImportSemaphoreWin32NameEXT( GLuint semaphore, GLenum type, const 
 
 static void display_funcs_init(void)
 {
-    struct egl_platform *egl;
+    struct egl_platform *egl, *next;
     UINT status;
 
     const char *env = getenv( "WINE_DISABLE_FULLSCREEN_HACK" );
@@ -3467,7 +3525,7 @@ static void display_funcs_init(void)
         display_funcs.p_wglQueryCurrentRendererStringWINE = win32u_wglQueryCurrentRendererStringWINE;
         display_funcs.p_wglQueryRendererIntegerWINE = win32u_wglQueryRendererIntegerWINE;
         display_funcs.p_wglQueryRendererStringWINE = win32u_wglQueryRendererStringWINE;
-        LIST_FOR_EACH_ENTRY( egl, &devices_egl, struct egl_platform, entry )
+        LIST_FOR_EACH_ENTRY_SAFE( egl, next, &devices_egl, struct egl_platform, entry )
             init_device_info( egl, &display_funcs );
     }
 }

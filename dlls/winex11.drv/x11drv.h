@@ -475,6 +475,7 @@ extern BOOL use_egl;
 extern BOOL use_take_focus;
 extern BOOL use_primary_selection;
 extern BOOL use_system_cursors;
+extern BOOL keyboard_scancode_detect;
 extern BOOL grab_fullscreen;
 extern BOOL usexcomposite;
 extern BOOL use_xfixes;
@@ -799,6 +800,10 @@ extern BOOL xinerama_get_fullscreen_monitors( const RECT *rect, unsigned long *g
 extern void xinerama_init( unsigned int width, unsigned int height );
 extern void init_recursive_mutex( pthread_mutex_t *mutex );
 extern void init_icm_profile(void);
+
+/* keyboard.c */
+
+extern WCHAR *x11drv_get_keyboard_layout_list( DWORD *size );
 
 #define DEPTH_COUNT 3
 extern const unsigned int *depths;

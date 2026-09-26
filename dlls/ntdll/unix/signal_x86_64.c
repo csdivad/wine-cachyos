@@ -2043,6 +2043,8 @@ static inline DWORD is_privileged_instr( CONTEXT *context )
     return 0;
 }
 
+static BOOL use_eos_syscall_hack;
+
 #ifdef HAVE_SECCOMP
 static void sigsys_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
@@ -2056,6 +2058,33 @@ static void sigsys_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     {
         /* Test syscall from the Unix side (install_bpf). */
         RAX_sig(ucontext) = STATUS_INVALID_PARAMETER;
+        return;
+    }
+
+    /* HACK: The EOS version of easy anti cheat executes linux syscalls in a high address
+     * to evade the older seccomp based syscall emulation. It maps a page at
+     * 0x700100000000 and uses it to execute syscalls.
+     * The child process does more of the same but at different address.
+     * Detect this case and execute the linux syscall instead. */
+    if ((long)RIP_sig(ucontext) >= 0x700100000000 && use_eos_syscall_hack)
+    {
+        /* block syscall user dispatch, if it was already blocked we wont be in this handler */
+        __asm__ (
+            "movq %%gs:0x30,%%r13\n\t"
+            "movb $0, 0x340(%%r13)\n\t"
+            ::: "r13"
+        );
+
+        RAX_sig(ucontext) = syscall(RAX_sig(ucontext), RDI_sig(ucontext), RSI_sig(ucontext),
+                                    RDX_sig(ucontext), R10_sig(ucontext), R8_sig(ucontext),
+                                    R9_sig(ucontext));
+
+        /* restore syscall user dispatch state */
+        __asm__ (
+            "movq %%gs:0x30,%%r13\n\t"
+            "movb $1, 0x340(%%r13)\n\t"
+            ::: "r13"
+        );
         return;
     }
 
@@ -2149,12 +2178,13 @@ static void install_bpf(struct sigaction *sig_act)
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_TRAP),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW),
     };
+    int limited_va = (ULONG_PTR)syscall < NATIVE_SYSCALL_ADDRESS_START; /* limited VA space (e.g. android) */
+    void *mmap_hint;
     long (*test_syscall)(long sc_number);
     struct sock_fprog prog;
     NTSTATUS status;
 
-    if ((ULONG_PTR)sc_seccomp < NATIVE_SYSCALL_ADDRESS_START
-            || (ULONG_PTR)syscall < NATIVE_SYSCALL_ADDRESS_START)
+    if (!limited_va && (ULONG_PTR)sc_seccomp < NATIVE_SYSCALL_ADDRESS_START)
     {
         ERR_(seh)("Native libs are being loaded in low addresses, sc_seccomp %p, syscall %p, not installing seccomp.\n",
                 sc_seccomp, syscall);
@@ -2167,9 +2197,10 @@ static void install_bpf(struct sigaction *sig_act)
 
     sigaction(SIGSYS, sig_act, NULL);
 
-    test_syscall = mmap((void *)0x600000000000, 0x1000, PROT_EXEC | PROT_READ | PROT_WRITE,
+    mmap_hint = limited_va ? NULL : (void *)0x600000000000;
+    test_syscall = mmap(mmap_hint, 0x1000, PROT_EXEC | PROT_READ | PROT_WRITE,
             MAP_FIXED_NOREPLACE | MAP_PRIVATE | MAP_ANON, -1, 0);
-    if (test_syscall != (void *)0x600000000000)
+    if (!limited_va ? test_syscall != (void *)0x600000000000 : test_syscall == MAP_FAILED)
     {
         int ret;
 
@@ -2279,7 +2310,7 @@ __ASM_GLOBAL_FUNC( dump_syscall_fault_return,
                    "movq %rdi,%rsp\n\t"
                    "movq %rsi,%rax\n\t"
                    "movq %rdx,%r13\n\t"
-                   "jmp %rcx")
+                   "jmpq *%rcx")
 
 
 static void dump_syscall_fault( CONTEXT *context, DWORD exc_code )
@@ -2841,6 +2872,7 @@ static void fpe_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     case FPE_FLTSUB:
         rec.ExceptionCode = EXCEPTION_ARRAY_BOUNDS_EXCEEDED;
         break;
+
     case FPE_INTDIV:
         rec.ExceptionCode = EXCEPTION_INT_DIVIDE_BY_ZERO;
         break;
@@ -2873,7 +2905,25 @@ static void fpe_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         rec.NumberParameters = 2;
         rec.ExceptionInformation[0] = 0;
         rec.ExceptionInformation[1] = context.c.FltSave.MxCsr;
-        if (CS_sig(ucontext) != cs64_sel) rec.ExceptionCode = STATUS_FLOAT_MULTIPLE_TRAPS;
+        if (CS_sig(ucontext) != cs64_sel)
+        {
+            switch (siginfo->si_code)
+            {
+            case FPE_FLTDIV:
+            case FPE_FLTINV:
+                rec.ExceptionCode = STATUS_FLOAT_MULTIPLE_TRAPS;
+                break;
+            case FPE_FLTOVF:
+            case FPE_FLTUND:
+            case FPE_FLTRES:
+                rec.ExceptionCode = STATUS_FLOAT_MULTIPLE_FAULTS;
+                break;
+            default:
+                FIXME("unknown SIMD exception: %#x\n", siginfo->si_code);
+                rec.ExceptionCode = STATUS_FLOAT_MULTIPLE_TRAPS;
+                break;
+            }
+        }
     }
     setup_raise_exception( sigcontext, &rec, &context );
 }
@@ -2922,7 +2972,8 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     ucontext_t *ucontext = init_handler( sigcontext );
 
-    if (!is_inside_syscall( RSP_sig(ucontext) )) user_mode_abort_thread( 0, get_syscall_frame() );
+    if (!ntdll_get_thread_data()->system_thread && !is_inside_syscall( RSP_sig(ucontext) ))
+        user_mode_abort_thread( 0, get_syscall_frame() );
     abort_thread( 0 );
 }
 
@@ -2936,7 +2987,11 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     ucontext_t *ucontext = init_handler( sigcontext );
 
-    if (is_inside_syscall( RSP_sig(ucontext) ))
+    if (ntdll_get_thread_data()->system_thread)
+    {
+        server_select( NULL, 0, SELECT_INTERRUPTIBLE, 0, NULL, NULL );
+    }
+    else if (is_inside_syscall( RSP_sig(ucontext) ))
     {
         struct syscall_frame *frame = get_syscall_frame();
         ULONG64 saved_compaction = 0;
@@ -3147,6 +3202,7 @@ void signal_init_process(void)
     WOW_TEB *wow_teb = get_wow_teb( NtCurrentTeb() );
     struct ntdll_thread_data *thread_data = ntdll_get_thread_data();
     void *ptr, *kernel_stack = (char *)thread_data->kernel_stack + kernel_stack_size;
+    const char *env;
 
     if (user_shared_data->XState.Size) xstate_size = user_shared_data->XState.Size - sizeof(XSAVE_FORMAT);
     frame_size = offsetof( struct syscall_frame, xstate ) + xstate_size;
@@ -3198,6 +3254,10 @@ void signal_init_process(void)
     install_bpf(&sig_act);
 
     emulate_cpuid();
+
+    /* We don't unset the env since child processes also need to inherit the same syscall hack */
+    use_eos_syscall_hack = (env = getenv("PROTON_SYSCALL_HACK")) && !strcmp(env, "1");
+    if (use_eos_syscall_hack) ERR_(seh)("Using EAC bootstrapper (EOS) syscall workaround!\n");
     return;
 
  error:
@@ -3213,7 +3273,7 @@ void set_thread_teb( TEB *teb )
 /***********************************************************************
  *           init_syscall_frame
  */
-void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, TEB *teb )
+__attribute__((used)) void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, TEB *teb )
 {
     struct amd64_thread_data *thread_data = (struct amd64_thread_data *)&teb->GdiTebBatch;
     struct syscall_frame *frame = ((struct ntdll_thread_data *)&teb->GdiTebBatch)->syscall_frame;

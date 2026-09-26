@@ -1132,6 +1132,7 @@ typedef volatile struct
     unsigned int access;       /* wanted access rights */
     unsigned int flags;        /* thread creation flags */
     int          request_fd;   /* fd for request pipe */
+    int          is_system;    /* system thread (kernel mode only) */
     VARARG(objattr,object_attributes); /* object attributes */
 @REPLY
     thread_id_t  tid;          /* thread id */
@@ -2816,6 +2817,7 @@ enum message_type
 #define SET_WINPOS_PAINT_SURFACE    0x01  /* window has a paintable surface */
 #define SET_WINPOS_PIXEL_FORMAT     0x02  /* window has a custom pixel format */
 #define SET_WINPOS_LAYERED_WINDOW   0x04  /* window is drawn with UpdateLayeredWindow */
+#define SET_WINPOS_CLIP_CLIENT      0x08  /* window client is clipped out of parent surfaces */
 
 /* Get the window and client rectangles of a window */
 @REQ(get_window_rectangles)
@@ -3085,6 +3087,18 @@ enum coords_relative
     obj_handle_t   handle;        /* handle to the desktop */
 @END
 
+/* Get the thread current keyboard layout */
+@REQ(get_thread_layout)
+    thread_id_t tid;              /* thread id */
+@REPLY
+    client_ptr_t layout;          /* keyboard layout HKL */
+@END
+
+/* Set the thread current keyboard layout */
+@REQ(set_thread_layout)
+    thread_id_t tid;              /* thread id */
+    client_ptr_t layout;          /* keyboard layout HKL */
+@END
 
 /* Set the thread current desktop */
 @REQ(set_thread_desktop)
