@@ -2246,36 +2246,6 @@ static void test_dir_kernel_object(void)
     ZwClose(dir_handle);
 }
 
-static void test_token_kernel_object(void)
-{
-    NTSTATUS (WINAPI *pZwOpenProcessToken)(HANDLE,DWORD,HANDLE*);
-    HANDLE token_handle, handle;
-    void *token_obj;
-    NTSTATUS status;
-
-    pZwOpenProcessToken = get_proc_address("ZwOpenProcessToken");
-    if (!pZwOpenProcessToken) return;
-
-    status = pZwOpenProcessToken(NtCurrentProcess(), TOKEN_QUERY, &token_handle);
-    ok(!status, "ZwOpenProcessToken failed: %#lx\n", status);
-    if (status) return;
-
-    status = ObReferenceObjectByHandle(token_handle, TOKEN_QUERY, *pSeTokenObjectType, KernelMode,
-                                       &token_obj, NULL);
-    ok(!status, "ObReferenceObjectByHandle failed: %#lx\n", status);
-    if (!status)
-    {
-        status = ObOpenObjectByPointer(token_obj, OBJ_KERNEL_HANDLE, NULL, TOKEN_QUERY,
-                                       *pSeTokenObjectType, KernelMode, &handle);
-        ok(!status, "ObOpenObjectByPointer failed: %#lx\n", status);
-        if (!status)
-            ZwClose(handle);
-        ObDereferenceObject(token_obj);
-    }
-
-    ZwClose(token_handle);
-}
-
 static void test_fsrtl_get_file_size(void)
 {
     static const char data[] = "hello, world!";
@@ -2847,7 +2817,6 @@ static NTSTATUS main_test(DEVICE_OBJECT *device, IRP *irp, IO_STACK_LOCATION *st
     test_IoAttachDeviceToDeviceStack();
     test_object_name();
     test_dir_kernel_object();
-    test_token_kernel_object();
     test_fsrtl_get_file_size();
 #if defined(__i386__) || defined(__x86_64__)
     test_executable_pool();

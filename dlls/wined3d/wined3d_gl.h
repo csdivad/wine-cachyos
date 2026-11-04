@@ -802,6 +802,7 @@ struct wined3d_caps_gl_ctx
     GLuint test_vbo;
     GLuint test_program_id;
 
+    struct wined3d_gpu_description runtime_gpu_description;
     const struct wined3d_gpu_description *gpu_description;
     UINT64 vram_bytes;
 };
@@ -815,6 +816,7 @@ struct wined3d_adapter_gl
 
     struct wined3d_gl_info gl_info;
 
+    /* Indexed by the WGL pixel format index minus 1. */
     struct wined3d_pixel_format *pixel_formats;
     unsigned int pixel_format_count;
 };

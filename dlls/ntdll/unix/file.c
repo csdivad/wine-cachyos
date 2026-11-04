@@ -1597,16 +1597,20 @@ static BOOL append_entry( struct dir_data *data, const char *long_name,
     if (long_nameW[long_len - 1] == '?') --long_len;
     long_nameW[long_len] = 0;
 
-    if (short_name)
+    short_len = 0;
+
+    if (!disable_sfn)
     {
-        short_len = ntdll_umbstowcs( short_name, strlen(short_name),
-                                     short_nameW, ARRAY_SIZE( short_nameW ) - 1 );
-    }
-    else  /* generate a short name if necessary */
-    {
-        short_len = 0;
-        if (!is_legal_8dot3_name( long_nameW, long_len ))
-            short_len = hash_short_file_name( long_nameW, long_len, short_nameW );
+        if (short_name)
+        {
+            short_len = ntdll_umbstowcs( short_name, strlen(short_name),
+                                        short_nameW, ARRAY_SIZE( short_nameW ) - 1 );
+        }
+        else  /* generate a short name if necessary */
+        {
+            if (!is_legal_8dot3_name( long_nameW, long_len ))
+                short_len = hash_short_file_name( long_nameW, long_len, short_nameW );
+        }
     }
     short_nameW[short_len] = 0;
     wcsupr( short_nameW );
@@ -3696,6 +3700,8 @@ static NTSTATUS lookup_unix_name( int root_fd, OBJECT_ATTRIBUTES *attr, UNICODE_
     struct stat st;
     char *unix_name = *buffer;
     const WCHAR *ptr, *end;
+    static char *skip_search = NULL;
+    static int skip_search_cached = -1;
 
     /* check syntax of individual components */
 
@@ -3742,6 +3748,15 @@ static NTSTATUS lookup_unix_name( int root_fd, OBJECT_ATTRIBUTES *attr, UNICODE_
     if (is_unix && (disposition == FILE_OPEN || disposition == FILE_OVERWRITE))
         return STATUS_OBJECT_NAME_NOT_FOUND;
 
+    if (skip_search_cached == -1)
+    {
+        skip_search = getenv("WINE_NO_OPEN_FILE_SEARCH");
+        skip_search_cached = !!skip_search;
+        if ( skip_search_cached )
+            FIXME( "Disabling case insensitive search for %s\n", skip_search );
+    }
+    if (skip_search && strcasestr(unix_name, skip_search) && disposition == FILE_OPEN)
+        return STATUS_OBJECT_NAME_NOT_FOUND;
     /* now do it component by component */
 
     while (name_len)
@@ -5766,6 +5781,7 @@ NTSTATUS WINAPI NtSetInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
 struct async_fileio_read
 {
     struct async_fileio io;
+    HANDLE              handle;
     char               *buffer;
     unsigned int        already;
     unsigned int        count;
@@ -5775,6 +5791,7 @@ struct async_fileio_read
 struct async_fileio_write
 {
     struct async_fileio io;
+    HANDLE              handle;
     const char         *buffer;
     unsigned int        already;
     unsigned int        count;
@@ -5783,6 +5800,7 @@ struct async_fileio_write
 struct async_fileio_read_changes
 {
     struct async_fileio io;
+    HANDLE              handle;
     void               *buffer;
     ULONG               buffer_size;
     ULONG               data_size;
@@ -5808,7 +5826,7 @@ void release_fileio( struct async_fileio *io )
     }
 }
 
-struct async_fileio *alloc_fileio( DWORD size, async_callback_t callback, HANDLE handle )
+struct async_fileio *alloc_fileio( DWORD size, async_callback_t callback )
 {
     /* first free remaining previous fileinfos */
     struct async_fileio *io = InterlockedExchangePointer( (void **)&fileio_freelist, NULL );
@@ -5821,10 +5839,7 @@ struct async_fileio *alloc_fileio( DWORD size, async_callback_t callback, HANDLE
     }
 
     if ((io = malloc( size )))
-    {
         io->callback = callback;
-        io->handle   = handle;
-    }
     return io;
 }
 
@@ -5856,7 +5871,7 @@ static BOOL async_read_proc( void *user, ULONG_PTR *info, unsigned int *status )
     {
     case STATUS_ALERTED: /* got some new data */
         /* check to see if the data is ready (non-blocking) */
-        if ((*status = server_get_unix_fd( fileio->io.handle, FILE_READ_DATA, &fd,
+        if ((*status = server_get_unix_fd( fileio->handle, FILE_READ_DATA, &fd,
                                           &needs_close, NULL, NULL )))
             break;
 
@@ -5907,7 +5922,7 @@ static BOOL async_write_proc( void *user, ULONG_PTR *info, unsigned int *status 
     {
     case STATUS_ALERTED:
         /* write some data (non-blocking) */
-        if ((*status = server_get_unix_fd( fileio->io.handle, FILE_WRITE_DATA, &fd,
+        if ((*status = server_get_unix_fd( fileio->handle, FILE_WRITE_DATA, &fd,
                                           &needs_close, &type, NULL )))
             break;
 
@@ -5965,7 +5980,7 @@ static unsigned int server_read_file( HANDLE handle, HANDLE event, PIO_APC_ROUTI
     HANDLE wait_handle;
     ULONG options;
 
-    if (!(async = (struct async_irp *)alloc_fileio( sizeof(*async), irp_completion, handle )))
+    if (!(async = (struct async_irp *)alloc_fileio( sizeof(*async), irp_completion )))
         return STATUS_NO_MEMORY;
 
     async->buffer  = buffer;
@@ -6000,7 +6015,7 @@ static unsigned int server_write_file( HANDLE handle, HANDLE event, PIO_APC_ROUT
     HANDLE wait_handle;
     ULONG options;
 
-    if (!(async = (struct async_irp *)alloc_fileio( sizeof(*async), irp_completion, handle )))
+    if (!(async = (struct async_irp *)alloc_fileio( sizeof(*async), irp_completion )))
         return STATUS_NO_MEMORY;
 
     async->buffer  = NULL;
@@ -6037,7 +6052,7 @@ static NTSTATUS server_ioctl_file( HANDLE handle, HANDLE event,
     HANDLE wait_handle;
     ULONG options;
 
-    if (!(async = (struct async_irp *)alloc_fileio( sizeof(*async), irp_completion, handle )))
+    if (!(async = (struct async_irp *)alloc_fileio( sizeof(*async), irp_completion )))
         return STATUS_NO_MEMORY;
     async->buffer  = out_buffer;
     async->size    = out_size;
@@ -6186,9 +6201,10 @@ static unsigned int register_async_file_read( HANDLE handle, HANDLE event,
     struct async_fileio_read *fileio;
     unsigned int status;
 
-    if (!(fileio = (struct async_fileio_read *)alloc_fileio( sizeof(*fileio), async_read_proc, handle )))
+    if (!(fileio = (struct async_fileio_read *)alloc_fileio( sizeof(*fileio), async_read_proc )))
         return STATUS_NO_MEMORY;
 
+    fileio->handle = handle;
     fileio->already = already;
     fileio->count = length;
     fileio->buffer = buffer;
@@ -6945,12 +6961,13 @@ NTSTATUS WINAPI NtWriteFile( HANDLE handle, HANDLE event, PIO_APC_ROUTINE apc, v
         {
             struct async_fileio_write *fileio;
 
-            fileio = (struct async_fileio_write *)alloc_fileio( sizeof(*fileio), async_write_proc, handle );
+            fileio = (struct async_fileio_write *)alloc_fileio( sizeof(*fileio), async_write_proc );
             if (!fileio)
             {
                 status = STATUS_NO_MEMORY;
                 goto err;
             }
+            fileio->handle = handle;
             fileio->already = total;
             fileio->count = length;
             fileio->buffer = buffer;
@@ -7340,7 +7357,7 @@ NTSTATUS WINAPI NtFlushBuffersFileEx( HANDLE handle, ULONG flags, void *params, 
     {
         struct async_irp *async;
 
-        if (!(async = (struct async_irp *)alloc_fileio( sizeof(*async), irp_completion, handle )))
+        if (!(async = (struct async_irp *)alloc_fileio( sizeof(*async), irp_completion )))
             return STATUS_NO_MEMORY;
         async->buffer  = NULL;
         async->size    = 0;
@@ -7550,7 +7567,7 @@ static BOOL read_changes_apc( void *user, ULONG_PTR *info, unsigned int *status 
     {
         SERVER_START_REQ( read_change )
         {
-            req->handle = wine_server_obj_handle( fileio->io.handle );
+            req->handle = wine_server_obj_handle( fileio->handle );
             wine_server_set_reply( req, fileio->data, fileio->data_size );
             *status = wine_server_call( req );
             size = wine_server_reply_size( reply );
@@ -7641,9 +7658,10 @@ NTSTATUS WINAPI NtNotifyChangeDirectoryFile( HANDLE handle, HANDLE event, PIO_AP
     if (filter == 0 || (filter & ~FILE_NOTIFY_ALL)) return STATUS_INVALID_PARAMETER;
 
     fileio = (struct async_fileio_read_changes *)alloc_fileio(
-        offsetof(struct async_fileio_read_changes, data[size]), read_changes_apc, handle );
+        offsetof(struct async_fileio_read_changes, data[size]), read_changes_apc );
     if (!fileio) return STATUS_NO_MEMORY;
 
+    fileio->handle      = handle;
     fileio->buffer      = buffer;
     fileio->buffer_size = buffer_size;
     fileio->data_size   = size;
@@ -7886,7 +7904,7 @@ NTSTATUS WINAPI NtQueryVolumeInformationFile( HANDLE handle, IO_STATUS_BLOCK *io
         struct async_irp *async;
         HANDLE wait_handle;
 
-        if (!(async = (struct async_irp *)alloc_fileio( sizeof(*async), irp_completion, handle )))
+        if (!(async = (struct async_irp *)alloc_fileio( sizeof(*async), irp_completion )))
             return STATUS_NO_MEMORY;
         async->buffer  = buffer;
         async->size    = length;
