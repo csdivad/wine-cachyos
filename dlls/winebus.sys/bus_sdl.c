@@ -58,6 +58,23 @@
 
 WINE_DEFAULT_DEBUG_CHANNEL(hid);
 
+/* logic from SDL2's SDL_ShouldIgnoreGameController; also used by the udev
+ * backend, so it must exist even when SDL itself is not available */
+BOOL is_sdl_ignored_device(WORD vid, WORD pid)
+{
+    const char *whitelist = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT");
+    const char *blacklist = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES");
+    char needle[16];
+
+    if (vid == 0x056a) return TRUE; /* all Wacom devices */
+    if (vid == 0x28de && pid == 0x11ff) return TRUE; /* Steam Input virtual controller, handled with evdev */
+
+    sprintf(needle, "0x%04x/0x%04x", vid, pid);
+    if (whitelist) return strcasestr(whitelist, needle) == NULL;
+    if (blacklist) return strcasestr(blacklist, needle) != NULL;
+    return FALSE;
+}
+
 #ifdef SONAME_LIBSDL2
 
 static pthread_mutex_t sdl_cs = PTHREAD_MUTEX_INITIALIZER;
@@ -67,6 +84,10 @@ static void *sdl_handle = NULL;
 static UINT quit_event = -1;
 static struct list event_queue = LIST_INIT(event_queue);
 static struct list device_list = LIST_INIT(device_list);
+
+/* Bound one drain pass so an event source that is continuously faster than
+ * its consumer cannot monopolize the winebus thread indefinitely. */
+#define SDL_EVENT_DRAIN_LIMIT 256
 
 #define MAKE_FUNCPTR(f) static typeof(f) * p##f = NULL
 MAKE_FUNCPTR(SDL_GetError);
@@ -79,6 +100,7 @@ MAKE_FUNCPTR(SDL_JoystickInstanceID);
 MAKE_FUNCPTR(SDL_JoystickName);
 MAKE_FUNCPTR(SDL_JoystickNumAxes);
 MAKE_FUNCPTR(SDL_JoystickOpen);
+MAKE_FUNCPTR(SDL_PollEvent);
 MAKE_FUNCPTR(SDL_WaitEventTimeout);
 MAKE_FUNCPTR(SDL_JoystickNumButtons);
 MAKE_FUNCPTR(SDL_JoystickNumBalls);
@@ -839,7 +861,7 @@ static BOOL set_report_from_joystick_event(struct sdl_device *impl, SDL_Event *e
             SDL_JoyAxisEvent *ie = &event->jaxis;
 
             if (!hid_device_set_abs_axis(iface, ie->axis, ie->value)) break;
-            bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
+            bus_event_queue_coalesced_input_report(&event_queue, iface, state->report_buf, state->report_len);
             break;
         }
         case SDL_JOYBALLMOTION:
@@ -917,7 +939,7 @@ static BOOL set_report_from_controller_event(struct sdl_device *impl, SDL_Event 
                 ie->value = -ie->value - 1; /* match XUSB / GIP protocol */
 
             hid_device_set_abs_axis(iface, ie->axis, ie->value);
-            bus_event_queue_input_report(&event_queue, iface, state->report_buf, state->report_len);
+            bus_event_queue_coalesced_input_report(&event_queue, iface, state->report_buf, state->report_len);
             break;
         }
         default:
@@ -928,20 +950,27 @@ static BOOL set_report_from_controller_event(struct sdl_device *impl, SDL_Event 
     return FALSE;
 }
 
-/* logic from SDL2's SDL_ShouldIgnoreGameController */
-BOOL is_sdl_ignored_device(WORD vid, WORD pid)
+
+static BOOL is_emulating_steaminput(void)
 {
-    const char *whitelist = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES_EXCEPT");
-    const char *blacklist = getenv("SDL_GAMECONTROLLER_IGNORE_DEVICES");
-    char needle[16];
+    const char *env = getenv("PROTON_EMULATE_STEAMINPUT");
+    return env && atoi(env);
+}
 
-    if (vid == 0x056a) return TRUE; /* all Wacom devices */
-    if (vid == 0x28de && pid == 0x11ff) return TRUE; /* Steam Input virtual controller, handled with evdev */
+static void fixup_steaminput_vidpid( struct device_desc *desc )
+{
+    static int cached = -1;
 
-    sprintf(needle, "0x%04x/0x%04x", vid, pid);
-    if (whitelist) return strcasestr(whitelist, needle) == NULL;
-    if (blacklist) return strcasestr(blacklist, needle) != NULL;
-    return FALSE;
+    if (cached == -1)
+    {
+        const char *s = getenv( "PROTON_SPOOF_STEAMINPUT_VIDPID" );
+        cached = s && *s != '0';
+        if (cached) ERR( "HACK: spoofing Steam Input controller vid / pid.\n" );
+    }
+    if (!cached) return;
+
+    desc->vid = 0x045e;
+    desc->pid = 0x028e;
 }
 
 static void sdl_add_device(unsigned int index)
@@ -998,6 +1027,16 @@ static void sdl_add_device(unsigned int index)
         if (controller) pSDL_GameControllerClose(controller);
         pSDL_JoystickClose(joystick);
         return;
+    }
+
+    if (is_emulating_steaminput())
+    {
+        TRACE("emulating steam input with %s\n", debugstr_device_desc(&desc));
+        desc.vid = 0x28de;
+        desc.pid = 0x11ff;
+        desc.version = 0;
+
+        fixup_steaminput_vidpid(&desc);
     }
 
     if (pSDL_JoystickGetSerial && (sdl_serial = pSDL_JoystickGetSerial(joystick)))
@@ -1128,6 +1167,7 @@ NTSTATUS sdl_bus_init(void *args)
     LOAD_FUNCPTR(SDL_JoystickName);
     LOAD_FUNCPTR(SDL_JoystickNumAxes);
     LOAD_FUNCPTR(SDL_JoystickOpen);
+    LOAD_FUNCPTR(SDL_PollEvent);
     LOAD_FUNCPTR(SDL_WaitEventTimeout);
     LOAD_FUNCPTR(SDL_JoystickNumButtons);
     LOAD_FUNCPTR(SDL_JoystickNumBalls);
@@ -1230,6 +1270,7 @@ NTSTATUS sdl_bus_wait(void *args)
 {
     struct bus_event *result = args;
     SDL_Event event;
+    unsigned int drained;
 
     /* cleanup previously returned event */
     bus_event_cleanup(result);
@@ -1237,7 +1278,17 @@ NTSTATUS sdl_bus_wait(void *args)
     do
     {
         if (bus_event_queue_pop(&event_queue, result)) return STATUS_PENDING;
-        if (pSDL_WaitEventTimeout(&event, 10) != 0) process_device_event(&event);
+        if (pSDL_WaitEventTimeout(&event, 10) != 0)
+        {
+            process_device_event(&event);
+
+            /* High-report-rate controllers can produce several axis events
+             * before winebus consumes one report. Drain SDL's pending events
+             * so axis states can be coalesced instead of replayed stale. */
+            for (drained = 0; event.type != quit_event && drained < SDL_EVENT_DRAIN_LIMIT &&
+                 pSDL_PollEvent(&event); ++drained)
+                process_device_event(&event);
+        }
         else check_all_devices_effects_state();
     } while (event.type != quit_event);
 
