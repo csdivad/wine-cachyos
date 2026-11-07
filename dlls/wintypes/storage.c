@@ -310,6 +310,8 @@ static HRESULT data_writer_init_buffer(struct data_writer *impl, UINT32 extra_ca
 
     impl->buffer = buffer;
     impl->data = data;
+    /* the copied bytes are part of the new buffer */
+    IBuffer_put_Length(buffer, pos);
 
     return S_OK;
 }
