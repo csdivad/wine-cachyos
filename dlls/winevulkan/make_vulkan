@@ -248,6 +248,8 @@ USER_DRIVER_FUNCS = {
     "vkSignalSemaphoreKHR",
     "vkWaitSemaphores",
     "vkWaitSemaphoresKHR",
+    "vkWaitForPresentKHR",
+    "vkWaitForPresent2KHR",
 }
 
 # functions for which the unix thunk is manually implemented
