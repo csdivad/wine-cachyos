@@ -799,6 +799,129 @@ static int load_cfg_header( IMAGE_LOAD_CONFIG_DIRECTORY64 *cfg, size_t va, size_
     return 1;
 }
 
+/* load a relocation target from the image: the PE header region is mapped from the start of the
+ * file, so a target that lands in it can be read directly, while a target outside every section
+ * and outside the headers reads as the zero the view holds there */
+static int load_reloc_target( void *value, size_t size, size_t va, size_t header_size,
+                              size_t align_mask, int unix_fd, IMAGE_SECTION_HEADER *sec,
+                              unsigned int nb_sec )
+{
+    if (load_data_dir( value, size, va, size, align_mask, unix_fd, sec, nb_sec ) == size) return 1;
+    if (size <= header_size && va <= header_size - size &&
+        pread( unix_fd, value, size, va ) == size) return 1;
+    return 0;
+}
+
+/* check whether a base relocation directory contains any effective relocations */
+static int has_effective_relocs( IMAGE_DATA_DIRECTORY *data, size_t align_mask,
+                                 int unix_fd, IMAGE_SECTION_HEADER *sec, unsigned int nb_sec,
+                                 size_t header_size, client_ptr_t image_base, mem_size_t image_size )
+{
+    size_t offset = 0;
+    int found_effective = 0;
+
+    if (!data->VirtualAddress || !data->Size) return 0;
+
+    while (offset < data->Size)
+    {
+        IMAGE_BASE_RELOCATION base;
+        size_t entries_size, entries_offset;
+        int ret;
+
+        /* the runtime walks the directory as: while (rel < end - 1 && rel->SizeOfBlock)
+         * (dlls/ntdll/loader.c), so a partial trailing header and a zero block end the walk
+         * instead of invalidating it - keep whatever was found up to that point */
+        if (data->Size - offset < sizeof(base))
+            break;
+
+        ret = load_data_dir( &base, sizeof(base), data->VirtualAddress + offset, data->Size - offset,
+                             align_mask, unix_fd, sec, nb_sec );
+
+        if (ret != sizeof(base))
+            break;
+
+        if (!base.SizeOfBlock)
+            break;
+
+        if (base.SizeOfBlock < sizeof(base) || base.SizeOfBlock > data->Size - offset)
+            return 0;
+
+        if (base.SizeOfBlock & 3)
+            return 0;
+
+        /* Address must be dword aligned */
+        if (base.VirtualAddress & 0xfff)
+            return 0;
+
+        entries_size = base.SizeOfBlock - sizeof(base);
+
+        /* read each block's entries in one call instead of one call per entry - this walk runs for
+         * every SEC_IMAGE mapping that carries a relocation directory. Once an effective entry is
+         * seen the remaining entries no longer matter, but every block header still has to be
+         * validated: the runtime walks all of them. */
+        for (entries_offset = 0; entries_offset < entries_size && !found_effective; )
+        {
+            USHORT entries[256], type, entry;
+            size_t chunk = min( entries_size - entries_offset, sizeof(entries) ), i;
+            size_t target_va;
+
+            ret = load_data_dir( entries, chunk,
+                                 data->VirtualAddress + offset + sizeof(base) + entries_offset,
+                                 entries_size - entries_offset,
+                                 align_mask, unix_fd, sec, nb_sec );
+            if (ret != chunk)
+                return 0;   /* can't read the table: don't relocate what can't be validated */
+
+            for (i = 0; i < chunk && !found_effective; i += sizeof(USHORT))
+            {
+                entry = entries[i / sizeof(USHORT)];
+                type = entry >> 12;
+                target_va = base.VirtualAddress + (entry & 0xfff);
+
+                if (type == IMAGE_REL_BASED_ABSOLUTE) continue;
+
+                if (type == IMAGE_REL_BASED_HIGHLOW || type == IMAGE_REL_BASED_DIR64)
+                {
+                    client_ptr_t value;
+
+                    if (type == IMAGE_REL_BASED_HIGHLOW)
+                    {
+                        DWORD v;
+
+                        /* a target the image cannot supply reads as zero: not effective */
+                        if (!load_reloc_target( &v, sizeof(v), target_va, header_size,
+                                                align_mask, unix_fd, sec, nb_sec ))
+                            continue;
+                        value = v;
+                    }
+                    else
+                    {
+                        ULONGLONG v;
+
+                        if (!load_reloc_target( &v, sizeof(v), target_va, header_size,
+                                                align_mask, unix_fd, sec, nb_sec ))
+                            continue;
+                        value = v;
+                    }
+
+                    if (value - image_base < image_size)
+                        found_effective = 1;
+                    continue;
+                }
+
+                found_effective = 1;   /* any other type is effective by definition */
+            }
+
+            entries_offset += chunk;
+        }
+
+        offset += base.SizeOfBlock;
+    }
+
+    return found_effective;
+}
+
+
 /* retrieve the mapping parameters for an executable (PE) image */
 static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_size, int unix_fd )
 {
@@ -828,7 +951,8 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
         IMAGE_LOAD_CONFIG_DIRECTORY64 cfg64;
     } cfg;
     off_t pos;
-    int size, has_relocs;
+    int size;
+    IMAGE_DATA_DIRECTORY *reloc_dir = NULL;
     size_t mz_size, clr_va = 0, clr_size = 0, exp_va, exp_size, cfg_va, cfg_size, align_mask;
     unsigned int i, ret;
 
@@ -896,10 +1020,9 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
         mapping->image.header_size     = nt.opt.hdr32.SizeOfHeaders;
         mapping->image.checksum        = nt.opt.hdr32.CheckSum;
 
-        has_relocs = (nt.opt.hdr32.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC &&
-                      nt.opt.hdr32.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress &&
-                      nt.opt.hdr32.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size &&
-                      !(nt.FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED));
+        if (nt.opt.hdr32.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC &&
+            !(nt.FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED))
+            reloc_dir = &nt.opt.hdr32.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
         break;
 
     case IMAGE_NT_OPTIONAL_HDR64_MAGIC:
@@ -944,10 +1067,9 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
         mapping->image.header_size     = nt.opt.hdr64.SizeOfHeaders;
         mapping->image.checksum        = nt.opt.hdr64.CheckSum;
 
-        has_relocs = (nt.opt.hdr64.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC &&
-                      nt.opt.hdr64.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].VirtualAddress &&
-                      nt.opt.hdr64.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC].Size &&
-                      !(nt.FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED));
+        if (nt.opt.hdr64.NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_BASERELOC &&
+            !(nt.FileHeader.Characteristics & IMAGE_FILE_RELOCS_STRIPPED))
+            reloc_dir = &nt.opt.hdr64.DataDirectory[IMAGE_DIRECTORY_ENTRY_BASERELOC];
         break;
 
     default:
@@ -972,9 +1094,6 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
 
     if (mapping->image.alignment & page_mask)
         mapping->image.image_flags |= IMAGE_FLAGS_ImageMappedFlat;
-    else if ((mapping->image.dll_charact & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE) &&
-             (has_relocs || mapping->image.contains_code) && !(clr_va && clr_size))
-        mapping->image.image_flags |= IMAGE_FLAGS_ImageDynamicallyRelocated;
 
     align_mask = max( mapping->image.alignment - 1, page_mask );
     mapping->image.map_size = round_size( mapping->image.map_size, align_mask );
@@ -997,6 +1116,17 @@ static unsigned int get_image_params( struct mapping *mapping, file_pos_t file_s
         mapping->image.header_map_size = min( mapping->image.header_map_size, sec[i].VirtualAddress );
         if (sec[i].Characteristics & IMAGE_SCN_MEM_EXECUTE) mapping->image.contains_code = 1;
     }
+
+    if (!(mapping->image.image_flags & IMAGE_FLAGS_ImageMappedFlat) &&
+        (mapping->image.dll_charact & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE) &&
+        reloc_dir && !(clr_va && clr_size) &&
+        has_effective_relocs( reloc_dir, align_mask, unix_fd, sec,
+                              nt.FileHeader.NumberOfSections,
+                              min( mapping->image.header_size, mapping->image.file_size ),
+                              mapping->image.base, mapping->image.map_size ))
+        mapping->image.image_flags |= IMAGE_FLAGS_ImageDynamicallyRelocated;
+    else
+        mapping->image.map_addr = 0;
 
     if (mapping->image.wine_builtin || mapping->image.wine_fakedll)
         mapping->exp_len = load_export_name( &mapping->exp_name, exp_va, exp_size, align_mask,
@@ -1260,8 +1390,8 @@ void generate_startup_debug_events( struct process *process )
     /* generate creation events */
     LIST_FOR_EACH_ENTRY( thread, &process->thread_list, struct thread, proc_entry )
     {
-        if (thread != first_thread)
-            generate_debug_event( thread, DbgCreateThreadStateChange, NULL );
+        if (thread->is_system) continue;
+        if (thread != first_thread) generate_debug_event( thread, DbgCreateThreadStateChange, NULL );
     }
 
     /* generate dll events (in loading order) */
@@ -1309,8 +1439,6 @@ static client_ptr_t assign_map_address( struct mapping *mapping )
     client_ptr_t ret;
     struct addr_range *range = (mapping->image.base >> 32) ? &ranges64 : &ranges32;
     mem_size_t size = round_size( mapping->size, granularity_mask );
-
-    if (!(mapping->image.image_charact & IMAGE_FILE_DLL)) return 0;
 
     if ((ret = get_fd_map_address( mapping->fd ))) return ret;
 

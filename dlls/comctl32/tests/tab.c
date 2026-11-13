@@ -250,6 +250,7 @@ static const struct message insert_focus_seq[] = {
     { TCM_GETCURFOCUS, sent|wparam|lparam, 0, 0 },
     { TCM_INSERTITEMA, sent|wparam, 3 },
     { EVENT_OBJECT_CREATE, winevent_hook|wparam|lparam, OBJID_CLIENT, 3 },
+    { EVENT_OBJECT_SELECTION, winevent_hook|wparam|lparam|optional, OBJID_CLIENT, 3 }, /* sent on Wine */
     { TCM_GETCURFOCUS, sent|wparam|lparam, 0, 0 },
     { 0 }
 };

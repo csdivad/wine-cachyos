@@ -1367,7 +1367,7 @@ HANDLE WINAPI DECLSPEC_HOTPATCH FindFirstFileExW( LPCWSTR filename, FINDEX_INFO_
 
     InitializeObjectAttributes( &attr, &nt_name, OBJ_CASE_INSENSITIVE, 0, NULL );
     status = NtOpenFile( &info->handle, FILE_LIST_DIRECTORY | SYNCHRONIZE, &attr, &io,
-                         FILE_SHARE_READ | FILE_SHARE_WRITE,
+                         FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                          FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT );
     if (status != STATUS_SUCCESS)
     {
@@ -2962,6 +2962,24 @@ BOOL WINAPI DECLSPEC_HOTPATCH SetCurrentDirectoryA( LPCSTR dir )
 BOOL WINAPI DECLSPEC_HOTPATCH SetCurrentDirectoryW( LPCWSTR dir )
 {
     UNICODE_STRING dirW;
+
+    wchar_t sgi[MAX_PATH];
+    DWORD size;
+    static INT isVGSOH = -1;
+
+    if (isVGSOH == -1) {
+        size = GetEnvironmentVariableW(L"SteamGameId", sgi, MAX_PATH);
+        isVGSOH = (size > 0 && !wcscmp(sgi, L"218210"));
+    }
+
+    if (isVGSOH) {
+        SIZE_T len = wcslen(dir);
+        if (len > 0 && dir[len - 1] == '.') {
+            WCHAR *p = (WCHAR *)dir + len - 1;
+            *p = '\0';
+            FIXME("%s . fixed\n", debugstr_w(dir));
+        }
+    }
 
     RtlInitUnicodeString( &dirW, dir );
     return set_ntstatus( RtlSetCurrentDirectory_U( &dirW ));

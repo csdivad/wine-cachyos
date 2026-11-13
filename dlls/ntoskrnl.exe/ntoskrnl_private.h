@@ -59,6 +59,9 @@ struct _EPROCESS
     BOOL wow64;
     ULONG session_id;
     char image_name[15];
+    PEB32 *peb32;
+    DWORD_PTR debug_port;
+    PACCESS_TOKEN token;
 };
 
 struct _KTHREAD
@@ -68,12 +71,19 @@ struct _KTHREAD
     CLIENT_ID id;
     unsigned int critical_region;
     KAFFINITY user_affinity;
+    void *teb;
 };
 
 struct _ETHREAD
 {
     struct _KTHREAD kthread;
 };
+
+typedef struct _PHYSICAL_MEMORY_RANGE {
+    PHYSICAL_ADDRESS BaseAddress;
+    LARGE_INTEGER NumberOfBytes;
+} PHYSICAL_MEMORY_RANGE, *PPHYSICAL_MEMORY_RANGE;
+
 
 void *alloc_kernel_object( POBJECT_TYPE type, HANDLE handle, SIZE_T size, LONG ref );
 NTSTATUS kernel_object_from_handle( HANDLE handle, POBJECT_TYPE type, void **ret );
