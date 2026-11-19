@@ -1080,7 +1080,7 @@ static bool amt_to_wg_format_video_indeo(const AM_MEDIA_TYPE *mt, struct wg_form
         return false;
     }
 
-    format->major_type = WG_MAJOR_TYPE_VIDEO_CINEPAK;
+    format->major_type = WG_MAJOR_TYPE_VIDEO_INDEO;
     if (IsEqualGUID(&mt->subtype, &MEDIASUBTYPE_IV50))
         format->u.video.version = 5;
     format->u.video.width = video_format->bmiHeader.biWidth;
@@ -1390,7 +1390,9 @@ static void send_buffer(struct parser_source *pin, struct parser *filter, const 
             {
                 struct wg_format format;
 
-                if (filter->output_compressed)
+                if (filter->output_compressed
+                        && pin->current_format.major_type != WG_MAJOR_TYPE_VIDEO
+                        && pin->current_format.major_type != WG_MAJOR_TYPE_AUDIO)
                 {
                     ERR("Ignoring dynamic format change attempt for compressed output.\n");
                     send_sample(pin, sample, buffer, 0, buffer->size, 0);
