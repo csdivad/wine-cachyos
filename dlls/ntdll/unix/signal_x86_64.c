@@ -2700,7 +2700,25 @@ static void fpe_handler( int signal, siginfo_t *siginfo, void *sigcontext )
         rec.NumberParameters = 2;
         rec.ExceptionInformation[0] = 0;
         rec.ExceptionInformation[1] = context.c.FltSave.MxCsr;
-        if (CS_sig(ucontext) != cs64_sel) rec.ExceptionCode = STATUS_FLOAT_MULTIPLE_TRAPS;
+        if (CS_sig(ucontext) != cs64_sel)
+        {
+            switch (siginfo->si_code)
+            {
+            case FPE_FLTDIV:
+            case FPE_FLTINV:
+                rec.ExceptionCode = STATUS_FLOAT_MULTIPLE_TRAPS;
+                break;
+            case FPE_FLTOVF:
+            case FPE_FLTUND:
+            case FPE_FLTRES:
+                rec.ExceptionCode = STATUS_FLOAT_MULTIPLE_FAULTS;
+                break;
+            default:
+                FIXME("unknown SIMD exception: %#x\n", siginfo->si_code);
+                rec.ExceptionCode = STATUS_FLOAT_MULTIPLE_TRAPS;
+                break;
+            }
+        }
     }
     setup_raise_exception( sigcontext, &rec, &context );
 }
@@ -2749,7 +2767,8 @@ static void quit_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     ucontext_t *ucontext = init_handler( sigcontext );
 
-    if (!is_inside_syscall( RSP_sig(ucontext) )) user_mode_abort_thread( 0, get_syscall_frame() );
+    if (!ntdll_get_thread_data()->system_thread && !is_inside_syscall( RSP_sig(ucontext) ))
+        user_mode_abort_thread( 0, get_syscall_frame() );
     abort_thread( 0 );
 }
 
@@ -2763,7 +2782,11 @@ static void usr1_handler( int signal, siginfo_t *siginfo, void *sigcontext )
 {
     ucontext_t *ucontext = init_handler( sigcontext );
 
-    if (is_inside_syscall( RSP_sig(ucontext) ))
+    if (ntdll_get_thread_data()->system_thread)
+    {
+        server_select( NULL, 0, SELECT_INTERRUPTIBLE, 0, NULL, NULL );
+    }
+    else if (is_inside_syscall( RSP_sig(ucontext) ))
     {
         struct syscall_frame *frame = get_syscall_frame();
         ULONG64 saved_compaction = 0;
@@ -3104,7 +3127,7 @@ void set_thread_teb( TEB *teb )
 /***********************************************************************
  *           init_syscall_frame
  */
-void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, TEB *teb )
+__attribute__((used)) void init_syscall_frame( LPTHREAD_START_ROUTINE entry, void *arg, BOOL suspend, TEB *teb )
 {
     struct amd64_thread_data *thread_data = (struct amd64_thread_data *)&teb->GdiTebBatch;
     struct syscall_frame *frame = ((struct ntdll_thread_data *)&teb->GdiTebBatch)->syscall_frame;

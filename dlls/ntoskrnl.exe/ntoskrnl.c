@@ -2505,6 +2505,8 @@ static void get_process_image_file_name( HANDLE handle, PEPROCESS process )
 
 static void *create_process_object( HANDLE handle )
 {
+    NTSTATUS status;
+    HANDLE token;
     PEPROCESS process;
 
     if (!(process = alloc_kernel_object( PsProcessType, handle, sizeof(*process), 0 ))) return NULL;
@@ -2517,7 +2519,35 @@ static void *create_process_object( HANDLE handle )
     get_process_image_file_name( handle, process );
     IsWow64Process( handle, &process->wow64 );
 
+    status = NtQueryInformationProcess( handle, ProcessWow64Information, &process->peb32, sizeof(process->peb32), NULL );
+    if (status) process->peb32 = NULL;
+
+    NtQueryInformationProcess( handle, ProcessDebugPort, &process->debug_port, sizeof(process->debug_port), NULL );
+    if (status) process->debug_port = 0;
+
+    NtOpenProcessToken( handle, TOKEN_ALL_ACCESS, &token );
+    ObReferenceObjectByHandle( token, 0, SeTokenObjectType, KernelMode, &process->token, NULL );
+    NtClose(token);
+
     return process;
+}
+
+void release_process_object(void *obj)
+{
+    PEPROCESS process = obj;
+
+    if (process->token)
+        ObDereferenceObject(process->token);
+
+    process->token = NULL;
+
+    SERVER_START_REQ( release_kernel_object )
+    {
+        req->manager  = wine_server_obj_handle( get_device_manager() );
+        req->user_ptr = wine_server_client_ptr( obj );
+        if (wine_server_call( req )) FIXME( "failed to release %p\n", obj );
+    }
+    SERVER_END_REQ;
 }
 
 static const WCHAR process_type_name[] = {'P','r','o','c','e','s','s',0};
@@ -2525,7 +2555,8 @@ static const WCHAR process_type_name[] = {'P','r','o','c','e','s','s',0};
 static struct _OBJECT_TYPE process_type =
 {
     process_type_name,
-    create_process_object
+    create_process_object,
+    release_process_object
 };
 
 POBJECT_TYPE PsProcessType = &process_type;
@@ -2613,6 +2644,40 @@ const char *WINAPI PsGetProcessImageFileName( PEPROCESS process )
     return process->image_name;
 }
 
+/*********************************************************************
+ *           PsGetProcessDebugPort    (NTOSKRNL.@)
+ */
+DWORD_PTR WINAPI PsGetProcessDebugPort( PEPROCESS process )
+{
+    TRACE("%p\n", process);
+    return process->debug_port;
+}
+
+/*********************************************************************
+ *           PsGetProcessExitStatus    (NTOSKRNL.@)
+ */
+NTSTATUS WINAPI PsGetProcessExitStatus( PEPROCESS process )
+{
+    NTSTATUS status;
+    HANDLE h;
+    PROCESS_BASIC_INFORMATION info;
+
+    TRACE("%p\n", process);
+
+    if ((status = ObOpenObjectByPointer(process, 0, NULL, PROCESS_ALL_ACCESS, NULL, KernelMode, &h)))
+    {
+        WARN("Error opening process object, status %#lx.\n", status);
+        return STATUS_NOT_FOUND;
+    }
+
+    status = NtQueryInformationProcess(h, ProcessBasicInformation, &info, sizeof(info), NULL);
+    NtClose(h);
+
+    if (status) return STATUS_NOT_FOUND;
+
+    return info.ExitStatus;
+}
+
 static void *create_thread_object( HANDLE handle )
 {
     THREAD_BASIC_INFORMATION info;
@@ -2628,6 +2693,7 @@ static void *create_thread_object( HANDLE handle )
     if (!NtQueryInformationThread( handle, ThreadBasicInformation, &info, sizeof(info), NULL ))
     {
         thread->id = info.ClientId;
+        thread->teb = info.TebBaseAddress;
         if ((process = OpenProcess( PROCESS_QUERY_INFORMATION, FALSE, HandleToUlong(thread->id.UniqueProcess) )))
         {
             kernel_object_from_handle( process, PsProcessType, (void**)&thread->process );
@@ -2705,6 +2771,15 @@ HANDLE WINAPI PsGetThreadId(PETHREAD thread)
 {
     TRACE( "%p -> %p\n", thread, thread->kthread.id.UniqueThread );
     return thread->kthread.id.UniqueThread;
+}
+
+/*********************************************************************
+ *           PsGetThreadProcess    (NTOSKRNL.@)
+ */
+PEPROCESS WINAPI PsGetThreadProcess(PETHREAD thread)
+{
+    TRACE("%p -> %p\n", thread, thread->kthread.process);
+    return thread->kthread.process;
 }
 
 /*********************************************************************
@@ -3421,6 +3496,29 @@ HANDLE WINAPI PsGetCurrentThreadId(void)
     return KeGetCurrentThread()->id.UniqueThread;
 }
 
+/***********************************************************************
+ *           PsGetCurrentThreadTeb   (NTOSKRNL.EXE.@)
+ */
+TEB *WINAPI PsGetCurrentThreadTeb(void)
+{
+    return KeGetCurrentThread()->teb;
+}
+
+/***********************************************************************
+ *           PsGetCurrentThreadProcess   (NTOSKRNL.EXE.@)
+ */
+PEPROCESS WINAPI PsGetCurrentThreadProcess(void)
+{
+    return KeGetCurrentThread()->process;
+}
+
+/***********************************************************************
+ *           PsGetCurrentThreadProcess   (NTOSKRNL.EXE.@)
+ */
+HANDLE WINAPI PsGetCurrentThreadProcessId(void)
+{
+    return PsGetProcessId(PsGetCurrentThreadProcess());
+}
 
 /***********************************************************************
  *           PsIsSystemThread   (NTOSKRNL.EXE.@)
@@ -3962,7 +4060,17 @@ void WINAPI KeBugCheckEx(ULONG code, ULONG_PTR param1, ULONG_PTR param2, ULONG_P
  */
 void WINAPI ProbeForRead(void *address, SIZE_T length, ULONG alignment)
 {
-    FIXME("(%p %Iu %lu) stub\n", address, length, alignment);
+    TRACE("(%p %Iu %lu)\n", address, length, alignment);
+
+    if (length == 0) return;
+
+    if ((ULONG_PTR)address & (alignment-1))
+        RtlRaiseStatus(STATUS_DATATYPE_MISALIGNMENT);
+
+    if ((ULONG_PTR)address + length < (ULONG_PTR)address)
+        RtlRaiseStatus(STATUS_ACCESS_VIOLATION);
+
+    /* TODO: Check if within address space */
 }
 
 /***********************************************************************
@@ -3970,7 +4078,14 @@ void WINAPI ProbeForRead(void *address, SIZE_T length, ULONG alignment)
  */
 void WINAPI ProbeForWrite(void *address, SIZE_T length, ULONG alignment)
 {
-    FIXME("(%p %Iu %lu) stub\n", address, length, alignment);
+    TRACE("(%p %Iu %lu)\n", address, length, alignment);
+
+    if (length == 0) return;
+
+    ProbeForRead(address, length, alignment);
+
+    for (volatile char *p = address; p < (char *)address + length; p++)
+        *p |= 0;
 }
 
 /***********************************************************************
@@ -4657,10 +4772,10 @@ NTSTATUS WINAPI DbgQueryDebugFilterState(ULONG component, ULONG level)
 /*********************************************************************
  *           PsGetProcessWow64Process    (NTOSKRNL.@)
  */
-PVOID WINAPI PsGetProcessWow64Process(PEPROCESS process)
+PEB32 * WINAPI PsGetProcessWow64Process(PEPROCESS process)
 {
-    FIXME("stub: %p\n", process);
-    return NULL;
+    TRACE("%p\n", process);
+    return process->peb32;
 }
 
 /*********************************************************************
@@ -4768,7 +4883,7 @@ ULONG WINAPI IoGetRequestorProcessId(IRP *irp)
 BOOLEAN WINAPI IoIs32bitProcess(IRP *irp)
 {
     TRACE("irp %p.\n", irp);
-    return irp->Tail.Overlay.Thread->kthread.process->wow64;
+    return !!irp->Tail.Overlay.Thread->kthread.process->peb32;
 }
 #endif
 
@@ -5045,12 +5160,12 @@ NTSTATUS WINAPI EtwUnregister(REGHANDLE handle)
 }
 
 /***********************************************************************
- *           IoThreadToProcess / PsGetThreadProcess   (NTOSKRNL.EXE.@)
+ *           VslGetSecurePciEnabled
  */
-PEPROCESS WINAPI IoThreadToProcess(PETHREAD thread)
+BOOL WINAPI VslGetSecurePciEnabled(void)
 {
-    TRACE("thread %p\n", thread);
-    return thread->kthread.process;
+    FIXME("stub!\n");
+    return TRUE;
 }
 
 /*****************************************************
