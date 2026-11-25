@@ -133,18 +133,21 @@ static const struct object_ops window_ops =
 #define PAINT_HAS_SURFACE          SET_WINPOS_PAINT_SURFACE
 #define PAINT_HAS_PIXEL_FORMAT     SET_WINPOS_PIXEL_FORMAT
 #define PAINT_HAS_LAYERED_SURFACE  SET_WINPOS_LAYERED_WINDOW
-#define PAINT_CLIENT_FLAGS         (PAINT_HAS_SURFACE | PAINT_HAS_PIXEL_FORMAT | PAINT_HAS_LAYERED_SURFACE)
+#define PAINT_CLIP_CLIENT          SET_WINPOS_CLIP_CLIENT
+#define PAINT_CLIENT_FLAGS         (PAINT_HAS_SURFACE | PAINT_HAS_PIXEL_FORMAT | \
+                                    PAINT_HAS_LAYERED_SURFACE | PAINT_CLIP_CLIENT)
 /* flags only manipulated by the server */
 #define PAINT_INTERNAL           0x0010  /* internal WM_PAINT pending */
 #define PAINT_ERASE              0x0020  /* needs WM_ERASEBKGND */
 #define PAINT_NONCLIENT          0x0040  /* needs WM_NCPAINT */
 #define PAINT_DELAYED_ERASE      0x0080  /* still needs erase after WM_ERASEBKGND */
-#define PAINT_PIXEL_FORMAT_CHILD 0x0100  /* at least one child has a custom pixel format */
+#define PAINT_CLIP_CLIENT_CHILD 0x0100  /* at least one child is clipped out of parent surfaces */
 
 /* growable array of user handles */
 struct user_handle_array
 {
     user_handle_t *handles;
+    user_handle_t *static_handles;
     int            count;
     int            total;
 };
@@ -246,12 +249,12 @@ static inline struct window *get_last_child( struct window *win )
     return ptr ? LIST_ENTRY( ptr, struct window, entry ) : NULL;
 }
 
-/* set the PAINT_PIXEL_FORMAT_CHILD flag on all the parents */
+/* set the PAINT_CLIP_CLIENT_CHILD flag on all the parents */
 /* note: we never reset the flag, it's just a heuristic */
-static inline void update_pixel_format_flags( struct window *win )
+static inline void update_clip_client_flags( struct window *win )
 {
     for (win = win->parent; win && win->parent; win = win->parent)
-        win->paint_flags |= PAINT_PIXEL_FORMAT_CHILD;
+        win->paint_flags |= PAINT_CLIP_CLIENT_CHILD;
 }
 
 static struct rectangle monitors_get_union_rect( struct winstation *winstation, int is_raw )
@@ -454,8 +457,8 @@ static int set_parent_window( struct window *win, struct window *parent )
             SHARED_WRITE_END;
         }
 
-        if (win->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_PIXEL_FORMAT_CHILD))
-            update_pixel_format_flags( win );
+        if (win->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_CLIP_CLIENT | PAINT_CLIP_CLIENT_CHILD))
+            update_clip_client_flags( win );
     }
     else  /* move it to parent unlinked list */
     {
@@ -473,10 +476,20 @@ static int add_handle_to_array( struct user_handle_array *array, user_handle_t h
     if (array->count >= array->total)
     {
         int new_total = max( array->total * 2, 32 );
-        user_handle_t *new_array = realloc( array->handles, new_total * sizeof(*new_array) );
+        user_handle_t *new_array;
+
+        if (array->handles == array->static_handles)
+        {
+            if ((new_array = mem_alloc( new_total * sizeof(*new_array) )))
+                memcpy( new_array, array->handles, array->count * sizeof(*new_array) );
+        }
+        else new_array = realloc( array->handles, new_total * sizeof(*new_array) );
+
         if (!new_array)
         {
-            free( array->handles );
+            if (array->handles != array->static_handles) free( array->handles );
+            array->handles = array->static_handles;
+            array->total = 0;
             set_error( STATUS_NO_MEMORY );
             return 0;
         }
@@ -1353,9 +1366,9 @@ error:
 }
 
 
-/* clip all children with a custom pixel format out of the visible region */
-static struct region *clip_pixel_format_children( struct window *parent, struct region *parent_clip,
-                                                  struct region *region, int offset_x, int offset_y )
+/* clip all children that draw outside of the parent surface out of the visible region */
+static struct region *clip_client_children( struct window *parent, struct region *parent_clip,
+                                            struct region *region, int offset_x, int offset_y )
 {
     struct window *ptr;
     struct region *clip = create_empty_region();
@@ -1373,18 +1386,19 @@ static struct region *clip_pixel_format_children( struct window *parent, struct 
         offset_region( clip, offset_x, offset_y );
         if (!intersect_region( clip, clip, parent_clip )) break;
         if (!union_region( region, region, clip )) break;
-        if (!(ptr->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_PIXEL_FORMAT_CHILD))) continue;
+        if (!(ptr->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_CLIP_CLIENT | PAINT_CLIP_CLIENT_CHILD))) continue;
 
-        /* subtract the client rect if it uses a custom pixel format */
+        /* subtract the client rect if it draws outside of the parent surface */
         set_region_rect( clip, &ptr->client_rect );
         if (ptr->win_region && !intersect_window_region( clip, ptr )) break;
         offset_region( clip, offset_x, offset_y );
         if (!intersect_region( clip, clip, parent_clip )) break;
-        if ((ptr->paint_flags & PAINT_HAS_PIXEL_FORMAT) && !subtract_region( region, region, clip ))
+        if ((ptr->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_CLIP_CLIENT)) &&
+            !subtract_region( region, region, clip ))
             break;
 
-        if (!clip_pixel_format_children( ptr, clip, region, offset_x + ptr->client_rect.left,
-                                         offset_y + ptr->client_rect.top ))
+        if (!clip_client_children( ptr, clip, region, offset_x + ptr->client_rect.left,
+                                   offset_y + ptr->client_rect.top ))
             break;
     }
     free_region( clip );
@@ -1407,7 +1421,8 @@ static struct region *get_surface_region( struct window *win )
     set_region_rect( clip, &win->client_rect );
     if (win->win_region && !intersect_window_region( clip, win )) goto error;
 
-    if ((win->paint_flags & PAINT_HAS_PIXEL_FORMAT) && !subtract_region( region, region, clip ))
+    if ((win->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_CLIP_CLIENT)) &&
+        !subtract_region( region, region, clip ))
         goto error;
 
     /* clip children */
@@ -1419,7 +1434,7 @@ static struct region *get_surface_region( struct window *win )
     }
     else offset_x = offset_y = 0;
 
-    if (!clip_pixel_format_children( win, clip, region, offset_x, offset_y )) goto error;
+    if (!clip_client_children( win, clip, region, offset_x, offset_y )) goto error;
 
     free_region( clip );
     return region;
@@ -2187,7 +2202,7 @@ void free_window_handle( struct window *win )
         else
             send_notify_message( child->handle, WM_WINE_DESTROYWINDOW, 0, 0 );
     }
-    LIST_FOR_EACH_ENTRY_SAFE( child, next, &win->children, struct window, entry )
+    LIST_FOR_EACH_ENTRY_SAFE( child, next, &win->unlinked, struct window, entry )
     {
         if (!child->handle) continue;
         if (!win->thread || !child->thread || win->thread == child->thread)
@@ -2216,6 +2231,8 @@ void free_window_handle( struct window *win )
         post_message( win->parent->handle, WM_PARENTNOTIFY, WM_DESTROY, win->handle );
     }
 
+    if (win->thread && win->thread->state == TERMINATED)
+        notify_abandoned_window( win->thread, win->handle );
     detach_window_thread( win );
 
     if (win->parent) set_parent_window( win, NULL );
@@ -2629,20 +2646,29 @@ DECL_HANDLER(get_class_windows)
 DECL_HANDLER(get_window_children_from_point)
 {
     struct user_handle_array array;
+    user_handle_t static_handles[8];
     struct window *parent = get_window( req->parent );
     data_size_t len;
 
     if (!parent) return;
 
-    array.handles = NULL;
+    array.handles = static_handles;
+    array.static_handles = static_handles;
     array.count = 0;
-    array.total = 0;
+    array.total = sizeof(static_handles) / sizeof(static_handles[0]);
     if (!all_windows_from_point( parent, req->x, req->y, req->dpi, &array )) return;
 
     reply->count = array.count;
     len = min( get_reply_max_size(), array.count * sizeof(user_handle_t) );
-    if (len) set_reply_data_ptr( array.handles, len );
-    else free( array.handles );
+    if (array.handles == static_handles)
+    {
+        if (len) set_reply_data( array.handles, len );
+    }
+    else
+    {
+        if (len) set_reply_data_ptr( array.handles, len );
+        else free( array.handles );
+    }
 }
 
 
@@ -2749,7 +2775,7 @@ DECL_HANDLER(set_window_pos)
     }
 
     win->paint_flags = (win->paint_flags & ~PAINT_CLIENT_FLAGS) | (req->paint_flags & PAINT_CLIENT_FLAGS);
-    if (win->paint_flags & PAINT_HAS_PIXEL_FORMAT) update_pixel_format_flags( win );
+    if (win->paint_flags & (PAINT_HAS_PIXEL_FORMAT | PAINT_CLIP_CLIENT)) update_clip_client_flags( win );
 
     win->monitor_dpi = req->monitor_dpi;
     old_style = win->style;

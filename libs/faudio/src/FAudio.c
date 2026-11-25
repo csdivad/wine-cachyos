@@ -208,16 +208,25 @@ uint32_t FAudio_GetDeviceCount(FAudio *audio, uint32_t *pCount)
 	return 0;
 }
 
+static uint32_t GetDeviceDetailsImpl(
+	FAudio *audio,
+	uint32_t Index,
+	const uint16_t *DeviceId,
+	FAudioDeviceDetails *pDeviceDetails
+) {
+	uint32_t result;
+	LOG_API_ENTER(audio)
+	result = FAudio_PlatformGetDeviceDetails(Index, DeviceId, pDeviceDetails);
+	LOG_API_EXIT(audio)
+	return result;
+}
+
 uint32_t FAudio_GetDeviceDetails(
 	FAudio *audio,
 	uint32_t Index,
 	FAudioDeviceDetails *pDeviceDetails
 ) {
-	uint32_t result;
-	LOG_API_ENTER(audio)
-	result = FAudio_PlatformGetDeviceDetails(Index, pDeviceDetails);
-	LOG_API_EXIT(audio)
-	return result;
+	return GetDeviceDetailsImpl(audio, Index, NULL, pDeviceDetails);
 }
 
 uint32_t FAudio_Initialize(
@@ -309,9 +318,7 @@ uint32_t FAudio_CreateSourceVoice(
 	(*ppSourceVoice)->src.maxFreqRatio = MaxFrequencyRatio;
 
 	if (	pSourceFormat->wFormatTag == FAUDIO_FORMAT_PCM ||
-		pSourceFormat->wFormatTag == FAUDIO_FORMAT_IEEE_FLOAT ||
-		pSourceFormat->wFormatTag == FAUDIO_FORMAT_WMAUDIO2 ||
-		pSourceFormat->wFormatTag == FAUDIO_FORMAT_WMAUDIO3	)
+		pSourceFormat->wFormatTag == FAUDIO_FORMAT_IEEE_FLOAT	)
 	{
 		FAudioWaveFormatExtensible *fmtex = (FAudioWaveFormatExtensible*) audio->pMalloc(
 			sizeof(FAudioWaveFormatExtensible)
@@ -333,14 +340,6 @@ uint32_t FAudio_CreateSourceVoice(
 		else if (pSourceFormat->wFormatTag == FAUDIO_FORMAT_IEEE_FLOAT)
 		{
 			FAudio_memcpy(&fmtex->SubFormat, &DATAFORMAT_SUBTYPE_IEEE_FLOAT, sizeof(FAudioGUID));
-		}
-		else if (pSourceFormat->wFormatTag == FAUDIO_FORMAT_WMAUDIO2)
-		{
-			FAudio_memcpy(&fmtex->SubFormat, &DATAFORMAT_SUBTYPE_WMAUDIO2, sizeof(FAudioGUID));
-		}
-		else if (pSourceFormat->wFormatTag == FAUDIO_FORMAT_WMAUDIO3)
-		{
-			FAudio_memcpy(&fmtex->SubFormat, &DATAFORMAT_SUBTYPE_WMAUDIO3, sizeof(FAudioGUID));
 		}
 		(*ppSourceVoice)->src.format = &fmtex->Format;
 	}
@@ -498,6 +497,23 @@ uint32_t FAudio_CreateSourceVoice(
 		}
 #else
 		FAudio_assert(0 && "XMA2 is not supported!");
+		(*ppSourceVoice)->src.decode = FAudio_INTERNAL_DecodeWMAERROR;
+#endif /* HAVE_WMADEC */
+	}
+	else if (	(*ppSourceVoice)->src.format->wFormatTag == FAUDIO_FORMAT_WMAUDIO2 ||
+			(*ppSourceVoice)->src.format->wFormatTag == FAUDIO_FORMAT_WMAUDIO3 ||
+			(*ppSourceVoice)->src.format->wFormatTag == FAUDIO_FORMAT_WMAUDIO_LOSSLESS	)
+	{
+#ifdef HAVE_WMADEC
+		if (FAudio_WMADEC_init(
+			*ppSourceVoice,
+			(*ppSourceVoice)->src.format->wFormatTag
+		) != 0)
+		{
+			(*ppSourceVoice)->src.decode = FAudio_INTERNAL_DecodeWMAERROR;
+		}
+#else
+		FAudio_assert(0 && "xWMA is not supported!");
 		(*ppSourceVoice)->src.decode = FAudio_INTERNAL_DecodeWMAERROR;
 #endif /* HAVE_WMADEC */
 	}
@@ -690,17 +706,16 @@ uint32_t FAudio_CreateSubmixVoice(
 	return 0;
 }
 
-uint32_t FAudio_CreateMasteringVoice(
+static uint32_t CreateMasteringVoiceImpl(
 	FAudio *audio,
 	FAudioMasteringVoice **ppMasteringVoice,
 	uint32_t InputChannels,
 	uint32_t InputSampleRate,
 	uint32_t Flags,
 	uint32_t DeviceIndex,
+	const uint16_t *DeviceId,
 	const FAudioEffectChain *pEffectChain
 ) {
-	LOG_API_ENTER(audio)
-
 	/* For now we only support one allocated master voice at a time */
 	FAudio_assert(audio->master == NULL);
 
@@ -708,7 +723,7 @@ uint32_t FAudio_CreateMasteringVoice(
 		InputSampleRate == FAUDIO_DEFAULT_SAMPLERATE	)
 	{
 		FAudioDeviceDetails details;
-		if (FAudio_GetDeviceDetails(audio, DeviceIndex, &details) != 0)
+		if (GetDeviceDetailsImpl(audio, DeviceIndex, DeviceId, &details) != 0)
 		{
 			return FAUDIO_E_INVALID_CALL;
 		}
@@ -765,6 +780,7 @@ uint32_t FAudio_CreateMasteringVoice(
 		audio,
 		audio->initFlags,
 		DeviceIndex,
+		DeviceId,
 		&audio->mixFormat,
 		&audio->updateSize,
 		&audio->platform
@@ -790,8 +806,35 @@ uint32_t FAudio_CreateMasteringVoice(
 		);
 	}
 
-	LOG_API_EXIT(audio)
 	return 0;
+}
+
+uint32_t FAudio_CreateMasteringVoice(
+	FAudio *audio,
+	FAudioMasteringVoice **ppMasteringVoice,
+	uint32_t InputChannels,
+	uint32_t InputSampleRate,
+	uint32_t Flags,
+	uint32_t DeviceIndex,
+	const FAudioEffectChain *pEffectChain
+) {
+	uint32_t retval;
+
+	LOG_API_ENTER(audio)
+
+	retval = CreateMasteringVoiceImpl(
+		audio,
+		ppMasteringVoice,
+		InputChannels,
+		InputSampleRate,
+		Flags,
+		DeviceIndex,
+		NULL,
+		pEffectChain
+	);
+
+	LOG_API_EXIT(audio)
+	return retval;
 }
 
 uint32_t FAudio_CreateMasteringVoice8(
@@ -804,36 +847,19 @@ uint32_t FAudio_CreateMasteringVoice8(
 	const FAudioEffectChain *pEffectChain,
 	FAudioStreamCategory StreamCategory
 ) {
-	uint32_t DeviceIndex, retval;
+	uint32_t retval;
 
 	LOG_API_ENTER(audio)
 
-	/* Eventually, we'll want the old CreateMastering to call the new one.
-	 * That will depend on us being able to use DeviceID though.
-	 * For now, use our little ID hack to turn szDeviceId into DeviceIndex.
-	 * -flibit
-	 */
-	if (szDeviceId == NULL || szDeviceId[0] == 0)
-	{
-		DeviceIndex = 0;
-	}
-	else
-	{
-		DeviceIndex = szDeviceId[0] - L'0';
-		if (DeviceIndex > FAudio_PlatformGetDeviceCount())
-		{
-			DeviceIndex = 0;
-		}
-	}
-
 	/* Note that StreamCategory is ignored! */
-	retval = FAudio_CreateMasteringVoice(
+	retval = CreateMasteringVoiceImpl(
 		audio,
 		ppMasteringVoice,
 		InputChannels,
 		InputSampleRate,
 		Flags,
-		DeviceIndex,
+		0,
+		szDeviceId,
 		pEffectChain
 	);
 
