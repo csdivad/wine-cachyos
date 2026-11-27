@@ -141,6 +141,15 @@ static void wayland_init_egl_platform(struct egl_platform *platform)
     egl = platform;
 }
 
+static int wayland_override_interval(int interval)
+{
+    const char *env = getenv("WAYLANDDRV_EGL_SWAP_INTERVAL");
+    int override = env ? atoi(env) : interval;
+    if (override < 0) override = 0;
+    if (env) FIXME("HACK: swap interval override %u\n", override);
+    return override;
+}
+
 static void wayland_drawable_flush(struct opengl_drawable *base, UINT flags)
 {
     struct wayland_gl_drawable *gl = impl_from_opengl_drawable(base);
@@ -179,7 +188,7 @@ static BOOL wayland_drawable_swap(struct opengl_drawable *base)
     client_surface_present(base->client);
     /* ensure that swap interval is zero before swapping */
     if (!InterlockedCompareExchange(&once, 1, 0)) funcs->p_eglSwapInterval(egl->display, 0);
-    if (abs(base->interval))
+    if (wayland_override_interval(abs(base->interval)))
     {
         /* 1 second, relative */
         const LARGE_INTEGER timeout = { .QuadPart = -10000 * 1000 };
