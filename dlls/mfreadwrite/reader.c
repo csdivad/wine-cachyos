@@ -290,7 +290,7 @@ static ULONG WINAPI source_reader_async_command_AddRef(IUnknown *iface)
 static ULONG WINAPI source_reader_async_command_Release(IUnknown *iface)
 {
     struct source_reader_async_command *command = impl_from_async_command_IUnknown(iface);
-    ULONG refcount = InterlockedIncrement(&command->refcount);
+    ULONG refcount = InterlockedDecrement(&command->refcount);
 
     if (!refcount)
     {
@@ -317,6 +317,7 @@ static HRESULT source_reader_create_async_op(enum source_reader_async_op op, str
         return E_OUTOFMEMORY;
 
     command->IUnknown_iface.lpVtbl = &source_reader_async_command_vtbl;
+    command->refcount = 1;
     command->op = op;
 
     *ret = command;
@@ -407,17 +408,20 @@ static HRESULT WINAPI source_reader_callback_GetParameters(IMFAsyncCallback *ifa
 static void source_reader_response_ready(struct source_reader *reader, struct stream_response *response)
 {
     struct source_reader_async_command *command;
-    struct media_stream *stream = &reader->streams[response->stream_index];
+    struct media_stream *stream = NULL;
     HRESULT hr;
 
-    if (!stream->requests)
+    if (response->stream_index < reader->stream_count)
+        stream = &reader->streams[response->stream_index];
+
+    if (stream && !stream->requests)
         return;
 
     if (reader->async_callback)
     {
         if (SUCCEEDED(source_reader_create_async_op(SOURCE_READER_ASYNC_SAMPLE_READY, &command)))
         {
-            command->u.sample.stream_index = stream->index;
+            command->u.sample.stream_index = response->stream_index;
             if (FAILED(hr = MFPutWorkItem(reader->queue, &reader->async_commands_callback, &command->IUnknown_iface)))
                 WARN("Failed to submit async result, hr %#lx.\n", hr);
             IUnknown_Release(&command->IUnknown_iface);
@@ -426,7 +430,8 @@ static void source_reader_response_ready(struct source_reader *reader, struct st
     else
         WakeAllConditionVariable(&reader->sample_event);
 
-    stream->requests--;
+    if (stream)
+        stream->requests--;
 }
 
 static HRESULT source_reader_queue_response(struct source_reader *reader, struct media_stream *stream, HRESULT status,
@@ -449,8 +454,6 @@ static HRESULT source_reader_queue_response(struct source_reader *reader, struct
     stream->responses++;
 
     source_reader_response_ready(reader, response);
-
-    stream->last_sample_ts = timestamp;
 
     return S_OK;
 }
@@ -690,6 +693,8 @@ static void media_type_try_copy_attr(IMFMediaType *dst, IMFMediaType *src, const
 /* also present in mf/topology_loader.c pipeline */
 static HRESULT update_media_type_from_upstream(IMFMediaType *media_type, IMFMediaType *upstream_type, BOOL advanced)
 {
+    UINT32 bits_per_sample, channels, samples_per_second;
+    GUID subtype;
     HRESULT hr = S_OK;
 
     /* propagate common video attributes */
@@ -721,6 +726,21 @@ static HRESULT update_media_type_from_upstream(IMFMediaType *media_type, IMFMedi
     media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_CHANNEL_MASK, &hr);
     media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_SAMPLES_PER_BLOCK, &hr);
     media_type_try_copy_attr(media_type, upstream_type, &MF_MT_AUDIO_VALID_BITS_PER_SAMPLE, &hr);
+
+    /* block alignment and byte rate may be inherited from the compressed upstream type;
+     * for pcm / float recompute them from the decoded format instead */
+    if (SUCCEEDED(hr) && SUCCEEDED(IMFMediaType_GetGUID(media_type, &MF_MT_SUBTYPE, &subtype))
+            && (IsEqualGUID(&subtype, &MFAudioFormat_PCM) || IsEqualGUID(&subtype, &MFAudioFormat_Float))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_BITS_PER_SAMPLE, &bits_per_sample))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_NUM_CHANNELS, &channels))
+            && SUCCEEDED(IMFMediaType_GetUINT32(media_type, &MF_MT_AUDIO_SAMPLES_PER_SECOND, &samples_per_second)))
+    {
+        UINT32 block_alignment = bits_per_sample * channels / 8;
+
+        hr = IMFMediaType_SetUINT32(media_type, &MF_MT_AUDIO_BLOCK_ALIGNMENT, block_alignment);
+        if (SUCCEEDED(hr))
+            hr = IMFMediaType_SetUINT32(media_type, &MF_MT_AUDIO_AVG_BYTES_PER_SECOND, block_alignment * samples_per_second);
+    }
 
     return hr;
 }
@@ -1204,7 +1224,8 @@ static struct stream_response *media_stream_pop_response(struct source_reader *r
         if (stream && response->stream_index != stream->index)
             continue;
 
-        if (!stream) stream = &reader->streams[response->stream_index];
+        if (!stream && response->stream_index < reader->stream_count)
+            stream = &reader->streams[response->stream_index];
 
         return media_stream_detach_response(reader, response);
     }
@@ -1306,6 +1327,7 @@ static BOOL source_reader_get_read_result(struct source_reader *reader, struct m
         if (*sample)
         {
             IMFSample_AddRef(*sample);
+            stream->last_sample_ts = response->timestamp;
             if (stream->state == STREAM_STATE_EOS && (ptr = list_head(&stream->transforms)))
             {
                 struct transform_entry *entry = LIST_ENTRY(ptr, struct transform_entry, entry);
@@ -1340,9 +1362,9 @@ static BOOL source_reader_get_read_result(struct source_reader *reader, struct m
 
 static HRESULT source_reader_get_next_selected_stream(struct source_reader *reader, DWORD *stream_index)
 {
-    unsigned int i, first_selected = ~0u;
+    unsigned int i, first_selected = ~0u, ready_index = ~0u;
     BOOL selected, stream_drained;
-    LONGLONG min_ts = MAXLONGLONG;
+    LONGLONG min_ts = MAXLONGLONG, min_ts_ready = MAXLONGLONG;
 
     for (i = 0; i < reader->stream_count; ++i)
     {
@@ -1354,17 +1376,28 @@ static HRESULT source_reader_get_next_selected_stream(struct source_reader *read
             if (first_selected == ~0u)
                 first_selected = i;
 
-            /* Pick the stream whose last sample had the lowest timestamp. */
-            if (!stream_drained && reader->streams[i].last_sample_ts < min_ts)
+            if (!stream_drained)
             {
-                min_ts = reader->streams[i].last_sample_ts;
-                *stream_index = i;
+                /* use least advanced stream if no responses are ready */
+                if (reader->streams[i].last_sample_ts < min_ts)
+                {
+                    min_ts = reader->streams[i].last_sample_ts;
+                    *stream_index = i;
+                }
+                /* between streams that have queued responses, use the one with the lowest delivered timestamp */
+                if (reader->streams[i].responses && reader->streams[i].last_sample_ts < min_ts_ready)
+                {
+                    min_ts_ready = reader->streams[i].last_sample_ts;
+                    ready_index = i;
+                }
             }
         }
     }
 
-    /* If all selected streams reached EOS, use first selected. */
-    if (first_selected != ~0u && min_ts == MAXLONGLONG)
+    /* prefer a stream with queued responses, else use the least advanced stream */
+    if (ready_index != ~0u)
+        *stream_index = ready_index;
+    else if (first_selected != ~0u && min_ts == MAXLONGLONG)
     {
         if (reader->flag_eos_for_all_streams)
             *stream_index = reader->next_stream_eos_index++ % reader->stream_count;
@@ -1473,7 +1506,7 @@ static HRESULT source_reader_flush(struct source_reader *reader, unsigned int in
 static HRESULT WINAPI source_reader_async_commands_callback_Invoke(IMFAsyncCallback *iface, IMFAsyncResult *result)
 {
     struct source_reader *reader = impl_from_async_commands_callback_IMFAsyncCallback(iface);
-    struct media_stream *stream, stub_stream = { .requests = 1 };
+    struct media_stream *stream = NULL, stub_stream = { .requests = 1 };
     struct source_reader_async_command *command;
     struct stream_response *response;
     DWORD stream_index, stream_flags;
@@ -1510,6 +1543,10 @@ static HRESULT WINAPI source_reader_async_commands_callback_Invoke(IMFAsyncCallb
                 else
                 {
                     stub_stream.index = command->u.read.stream_index;
+                    if (stub_stream.index < reader->stream_count)
+                        reader->streams[stub_stream.index].requests++;
+                    if (hr == MF_E_MEDIA_SOURCE_NO_STREAMS_SELECTED)
+                        hr = MF_E_INVALIDREQUEST;
                     source_reader_queue_response(reader, &stub_stream, hr, MF_SOURCE_READERF_ERROR, 0, NULL);
                 }
             }
@@ -1528,10 +1565,10 @@ static HRESULT WINAPI source_reader_async_commands_callback_Invoke(IMFAsyncCallb
         case SOURCE_READER_ASYNC_SEEK:
 
             EnterCriticalSection(&reader->cs);
-            if (SUCCEEDED(IMFMediaSource_Start(reader->source, reader->descriptor, &command->u.seek.format,
+            if (FAILED(IMFMediaSource_Start(reader->source, reader->descriptor, &command->u.seek.format,
                     &command->u.seek.position)))
             {
-                reader->flags |= SOURCE_READER_SEEKING;
+                reader->flags &= ~SOURCE_READER_SEEKING;
             }
             LeaveCriticalSection(&reader->cs);
 
@@ -1540,7 +1577,8 @@ static HRESULT WINAPI source_reader_async_commands_callback_Invoke(IMFAsyncCallb
         case SOURCE_READER_ASYNC_SAMPLE_READY:
 
             EnterCriticalSection(&reader->cs);
-            stream = &reader->streams[command->u.sample.stream_index];
+            if (command->u.sample.stream_index < reader->stream_count)
+                stream = &reader->streams[command->u.sample.stream_index];
             response = media_stream_pop_response(reader, stream);
             LeaveCriticalSection(&reader->cs);
 
@@ -2268,6 +2306,8 @@ static HRESULT WINAPI src_reader_SetCurrentPosition(IMFSourceReaderEx *iface, RE
 
     if (SUCCEEDED(hr))
     {
+        reader->flags |= SOURCE_READER_SEEKING;
+
         for (i = 0; i < reader->stream_count; ++i)
         {
             reader->streams[i].last_sample_ts = 0;
@@ -2288,7 +2328,6 @@ static HRESULT WINAPI src_reader_SetCurrentPosition(IMFSourceReaderEx *iface, RE
         {
             if (SUCCEEDED(IMFMediaSource_Start(reader->source, reader->descriptor, format, position)))
             {
-                reader->flags |= SOURCE_READER_SEEKING;
                 while (reader->flags & SOURCE_READER_SEEKING)
                 {
                     SleepConditionVariableCS(&reader->state_event, &reader->cs, INFINITE);
@@ -2786,7 +2825,9 @@ static HRESULT create_source_reader_from_source(IMFMediaSource *source, IMFAttri
         if (FAILED(hr))
             break;
 
-        hr = IMFMediaTypeHandler_GetMediaTypeByIndex(handler, 0, &src_type);
+        hr = IMFMediaTypeHandler_GetCurrentMediaType(handler, &src_type);
+        if (FAILED(hr))
+            hr = IMFMediaTypeHandler_GetMediaTypeByIndex(handler, 0, &src_type);
         IMFMediaTypeHandler_Release(handler);
         if (FAILED(hr))
             break;

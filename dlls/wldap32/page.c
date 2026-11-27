@@ -180,7 +180,7 @@ ULONG CDECL ldap_get_paged_count( LDAP *ld, LDAPSearch *search, ULONG *count, WL
         return WLDAP32_LDAP_SUCCESS;
     }
 
-    free( search->cookie );
+    if (search->cookie != &null_cookieW) free( search->cookie );
     search->cookie = NULL;
 
     ret = ldap_parse_page_controlW( ld, server_ctrls, count, &search->cookie );
@@ -266,7 +266,7 @@ ULONG CDECL ldap_search_abandon_page( LDAP *ld, LDAPSearch *search )
     while (*ctrls) controlfreeW( *ctrls++ );
     free( search->serverctrls );
     controlarrayfreeW( search->clientctrls );
-    if (search->cookie && search->cookie != &null_cookieW) free( search->cookie );
+    if (search->cookie != &null_cookieW) free( search->cookie );
     free( search );
 
     return WLDAP32_LDAP_SUCCESS;
@@ -306,19 +306,11 @@ LDAPSearch * CDECL ldap_search_init_pageW( LDAP *ld, WCHAR *dn, ULONG scope, WCH
     search->serverctrls[0] = NULL; /* reserve 0 for page control */
     for (i = 0; i < len; i++)
     {
-        if (!(search->serverctrls[i + 1] = controldupW( serverctrls[i] )))
-        {
-            for (; i > 0; i--) controlfreeW( search->serverctrls[i] );
-            goto fail;
-        }
+        if (!(search->serverctrls[i + 1] = controldupW( serverctrls[i] ))) goto fail;
     }
     search->serverctrls[len + 1] = NULL;
 
-    if (clientctrls && !(search->clientctrls = controlarraydupW( clientctrls )))
-    {
-        for (i = 0; i < len; i++) controlfreeW( search->serverctrls[i] );
-        goto fail;
-    }
+    if (clientctrls && !(search->clientctrls = controlarraydupW( clientctrls ))) goto fail;
 
     search->scope           = scope;
     search->attrsonly       = attrsonly;
